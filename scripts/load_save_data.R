@@ -43,38 +43,43 @@ for (i in 1:length(sites)) {
   
   yrs <- yrs_included(basepath,site,level[1])
   
-  # Load data
-  data_in <- read_data_all_years(basepath,yrs,site,level,tv_input)
-  
-  cols <- colnames(data_in) # Get column names
-  
-  # remove HVR qualifiers
-  vars <- gsub("_[[:digit:]]", "", cols) 
-  colnames(data_in) <- vars
-  
-  # Create empty column for missing variables of interest
-  data_in[var_of_interest[!(var_of_interest %in% vars)]] = NA
-  
-  # Get index of each column of variable of interest
-  indexvar <- c()
-  for (j in 1:length(var_of_interest)) {
-    indexvar[j] <- which(names(data_in) %in% var_of_interest[j])
+  if(!is.null(yrs)){
+    # Load data
+    data_in <- read_data_all_years(basepath,yrs,site,level,tv_input)
+    
+    cols <- colnames(data_in) # Get column names
+    
+    # remove HVR qualifiers
+    vars <- gsub("_[[:digit:]]", "", cols) 
+    colnames(data_in) <- vars
+    
+    # Create empty column for missing variables of interest
+    data_in[var_of_interest[!(var_of_interest %in% vars)]] = NA
+    
+    # Get index of each column of variable of interest
+    indexvar <- c()
+    for (j in 1:length(var_of_interest)) {
+      indexvar[j] <- which(names(data_in) %in% var_of_interest[j])
+    }
+    indexvar <- na.omit(indexvar)
+    
+    data_subset <- data_in[,indexvar]
+    
+    # Add 'site' variable to dataframe
+    data_subset$site <- site
+    
+    # Merge with other sites
+    if (i == 1){
+      data_all <- data_subset
+    } else {data_all <- merge(data_all, data_subset, all = T)
+    }
+    
+    print(unique(data_subset$site))
   }
-  indexvar <- na.omit(indexvar)
-  
-  data_subset <- data_in[,indexvar]
-  
-  # Add 'site' variable to dataframe
-  data_subset$site <- site
-  
-  # Merge with other sites
-  if (i == 1){
-    data_all <- data_subset
-  } else {data_all <- merge(data_all, data_subset, all = T)
-  }
-  
-  print(unique(data_subset$site))
 }
+
+# Only keep names of sites that already have data available
+sites <- unique(data_all$site)
 
 # Define units for plot with all sites
 data_units_all <- var_units(colnames(data_all),UnitCSVFilePath)
