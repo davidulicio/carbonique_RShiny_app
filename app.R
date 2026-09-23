@@ -1,700 +1,524 @@
 # ------------------------------------------------------------------
-# June, 2024
-# Sara Knox
-# sara.knox@mcgill.ca
-
-# Adapted from the Ameriflux data visualization app from
-# Sophie Ruehr
-# sophie_ruehr@berkeley.edu
+# CARBONIQUE data explorer
+#
+# June, 2024: Sara Knox (sara.knox@mcgill.ca), adapted from the AmeriFlux
+#   data visualization app by Sophie Ruehr (sophie_ruehr@berkeley.edu)
+# December 2024: Tim Elrick, server setup and load-time improvements
+# 2026: David Trejo Cancino, performance rewrite, CARBONIQUE visual identity,
+#   French/English interface
+#
+# Files:
+#   scripts/UQAM_ini.R     settings (database path, level, variables)
+#   functions/             data access, analyses and plots
+#   www/                   logo, Roboto font, stylesheet and small script
 # ------------------------------------------------------------------
 
-# 1. SET UP  -------------------------------------------------------
-
-# Tim Elrick, 2024-12-19: speed up load time
-#source("scripts/load_save_data.R")
-library(tidyverse)
-if (!file.exists("data/updated.txt") || today() != read_lines("data/updated.txt")) {
-  source("scripts/load_save_data.R")
-} else {
-  load("data/all_data.RData")
-  source("scripts/UQAM_ini.R")
-}
-
-
-# 2. ATTACH REQUIRED PACKAGES -------------------------------------
-
-# Tim Elrick, 2024-12-19: added necessary packages
-library(hms)
+# 1. SET UP ---------------------------------------------------------
 library(shiny)
-library(shinydashboard) 
-library(shinycssloaders)
+library(bslib)
 library(plotly)
-library(gridExtra)
-library(grid)
-library(tidyverse)
-library(readxl)
 library(data.table)
-library(ggrepel)
-library(readr)
 
-# 3. USER INTERFACE ----
-ui <- dashboardPage(skin = 'black', # Begin UI 
-                    
-                    dashboardHeader(title = "Data Visualization Tool"),
-                    
-                    dashboardSidebar(sidebarMenu(
-                      menuItem("Individual sites", tabName = "indiv"),
-                      menuItem("All sites", tabName = "all"),
-                      menuItem("About", tabName = "about")
-                    )), # End dashboard sidebar
-                    
-                    
-                    dashboardBody( # Begin dashboard body
-                      
-                      # Suppress warnings
-                      tags$style(type="text/css",
-                                 ".shiny-output-error { visibility: hidden; }",
-                                 ".shiny-output-error:before { visibility: hidden; }"),
-                      
-                      tabItems(
-                        tabItem( # Begin 'Individual Sites' page
-                          h1('Individual sites'),
-                          
-                          tabName = "indiv",
-                          # Select site from dropdown list
-                          selectInput('sites', 'Select site', sites,
-                                      multiple = F),
-                          
-                          # 1. Site information (main panel)
-                          
-                          br(), br(),
-                          
-                          tabsetPanel( # Begin tab panels section
-                            
-                            tabPanel( # Begin time series tab
-                              "Time series",
-                              
-                              br(),
-                              
-                              # Select main variable
-                              fluidRow( column(6, selectInput('tscol', 'Variable', names(data[-c(1)]))),
-                                        
-                                        # Select date range for time series
-                                        column(12,  sliderInput(inputId = "range", width = '80%',
-                                                                label = "Date range",
-                                                                min = min(data$datetime, na.rm = T),
-                                                                max = max(data$datetime, na.rm = T),
-                                                                value = c(min(data$datetime, na.rm = T),
-                                                                          max(data$datetime, na.rm = T))))),
-                              br(),
-                              
-                              # Ouput time series plot with a spinner
-                              shinycssloaders::withSpinner(plotlyOutput('timeseries_plots'),
-                                                           type = getOption("spinner.type", default = 5),
-                                                           color = getOption("spinner.color", default = "#4D90FE")),
-                              h5(em('Plot shows 30-min data'), align = 'center')
-                              
-                            ), # End time series tab 
-                            
-                            tabPanel( # Begin scatter plots and diagnostics
-                              "Scatter plots",
-                              
-                              br(),
-                              
-                              fluidRow(column(6, # Make both inputs on same row
-                                              # Input first (one) variable for scatter plot                               
-                                              selectInput('onecol', 'First variable', names(data[-c(1)]))),
-                                       column(6, 
-                                              # Input second (two) variable for scatter plot 
-                                              selectInput('twocol', 'Second variable', names(data[-c(1:2)])))),
-                              br(),
-                              
-                              # Output scatter and density plots
-                              shinycssloaders::withSpinner(plotlyOutput('scatter_plots', # For diurnal plot
-                                                                        width = '100%', height = '60%'),
-                                                           type = getOption("spinner.type", default = 5),
-                                                           color = getOption("spinner.color", default = "dodgerblue")),
-                              
-                              shinycssloaders::withSpinner(plotOutput('scatter_diagnostics', # For cross correlation plot
-                                                                      width = '100%', height = "400px")),
-                              # type = getOption("spinner.type", default = 5),
-                              # color = getOption("spinner.color", default = "dodgerblue")),
-                              
-                              br(),
-                              
-                              h5(em('Scatter plots and diagnostics of half-hourly data.'),
-                                 align = 'center')
-                              
-                            ), # End scatter plots tab
-                            
-                            tabPanel('Diurnal Cycle',
-                                     
-                                     # CREATE VARIABLE INPUTS 
-                                     fluidRow(column(6, selectInput('dicol', 'Variable', names(data[-c(1)]))),
-                                              # Select date range for time series
-                                              column(12,  sliderInput(inputId = "range", width = '80%',
-                                                                      label = "Date range",
-                                                                      min = min(data$datetime, na.rm = T),
-                                                                      max = max(data$datetime, na.rm = T),
-                                                                      value = c(min(data$datetime, na.rm = T),
-                                                                                max(data$datetime, na.rm = T))))        
-                                     ), # END FLUID ROW 
-                                     
-                                     # OUTPUT DIURNAL PLOTS (W/ SPINNER)
-                                     shinycssloaders::withSpinner(
-                                       plotlyOutput('diurnal', width = '100%', height = '100%'),  # Increased height to ensure equal panel sizes
-                                       type = getOption("spinner.type", default = 5),
-                                       color = getOption("spinner.color", default = "dodgerblue")
-                                     ),
-                                     
-                                     br(),
-                                     
-                                     h5(em('Plot shows mean monthly diurnal variation over the specified period.'), 
-                                        align = 'center')
-                                     
-                            ), # End diurnal cycle tab
-                            
-                            tabPanel('Radiation Diagnostics',
-                                     
-                                     # CREATE VARIABLE INPUTS 
-                                     fluidRow(column(3, selectInput('radcol', 'Variable', var_rad)),
-                                              column(3, 
-                                                     # Input second (two) variable for scatter plot 
-                                                     selectInput('site_yr', 'Year', yrs))
-                                     ), # END FLUID ROW 
-                                     
-                                     # OUTPUT RADIATION PLOTS
-                                     shinycssloaders::withSpinner(plotlyOutput('radiation1', # For diurnal plot
-                                                                               width = '100%', height = '100%'),
-                                                                  type = getOption("spinner.type", default = 5),
-                                                                  color = getOption("spinner.color", default = "dodgerblue")),
-                                     
-                                     shinycssloaders::withSpinner(plotlyOutput('radiation2', # For cross correlation plot
-                                                                               width = '100%', height = '100%'),
-                                                                  type = getOption("spinner.type", default = 5),
-                                                                  color = getOption("spinner.color", default = "dodgerblue")),
-                                     
-                                     br(),
-                                     
-                                     h5(em('Plot shows mean diurnal radiation pattern and cross correlation between measured radiation and potential radiation'), 
-                                        align = 'center')
-                                     
-                            ), # End radiation diagnostics tab
-                            
-                            tabPanel( # Begin EBC plots and diagnostics
-                              "Energy balance closure",
-                              
-                              br(),
-                              
-                              fluidRow(column(6, # Make both inputs on same row
-                                              # Input first (one) variable for scatter plot                               
-                                              selectInput('onecol_EBC', 'First variable', ae_columns <- grep("^AE_", colnames(data), value = TRUE))),
-                                       column(6, 
-                                              # Input second (two) variable for scatter plot 
-                                              selectInput('twocol_EBC', 'Second variable', ae_columns <- grep("H_LE", colnames(data), value = TRUE)))),
-                              br(),
-                              
-                              # Output scatter and density plots
-                              shinycssloaders::withSpinner(plotlyOutput('EBC_plots', # For diurnal plot
-                                                                        width = '100%', height = '60%'),
-                                                           type = getOption("spinner.type", default = 5),
-                                                           color = getOption("spinner.color", default = "dodgerblue")),
-                              
-                              shinycssloaders::withSpinner(plotOutput('EBC_diagnostics', # For cross correlation plot
-                                                                      width = '100%', height = "400px")),
-                              # type = getOption("spinner.type", default = 5),
-                              # color = getOption("spinner.color", default = "dodgerblue")),
-                              
-                              br(),
-                              
-                              h5(em('Energy balance closure of half-hourly data.'),
-                                 align = 'center')
-                              
-                            ), # End EBC tab
-                            
-                            tabPanel('Cumulative plots', # Begin cumulative plots
-                                     
-                                     # CREATE VARIABLE INPUTS 
-                                     fluidRow(column(6, selectInput('cumcol', 'Variable', grep("^(NEE|FCH4).*_uStar_f$", colnames(data), value = TRUE)))
-                                     ), # END FLUID ROW 
-                                     
-                                     # OUTPUT DIURNAL PLOTS (W/ SPINNER)
-                                     shinycssloaders::withSpinner(
-                                       plotlyOutput('cumulative', width = '100%', height = '100%'),  # Increased height to ensure equal panel sizes
-                                       type = getOption("spinner.type", default = 5),
-                                       color = getOption("spinner.color", default = "dodgerblue")
-                                     ),
-                                     
-                                     br(),
-                                     
-                                     h5(em('Plot shows cumulative fluxes.'), 
-                                        align = 'center')
-                                     
-                            ) # End cumulative plots tab
-                            
-                          ) # End tab panels section
-                        ), # End 'Individual Sites' page
-                        
-                        tabItem( # Begin 'All Sites' page
-                          tabName = "all",
-                          h1('All sites'),
-                          
-                          # Select inputs for plot
-                          fluidRow( column(4, selectInput('xcol_all', 'X-axis variable', xvars)), 
-                                    column(4, selectInput('ycol_all', 'Y-axis variable', yvars)),
-                                    
-                                    br(),  br(),  br(), br(),  br(),
-                                    
-                                    # Output plot
-                                    shinycssloaders::withSpinner(plotlyOutput('all_plots', 
-                                                                              width = '100%',  height = '100%'),
-                                                                 type = getOption("spinner.type", default = 5)),
-                                    inline = TRUE,
-                                    
-                                    br()
-                          ) # End 'All Sites' page
-                        ), # End tab panels section
-                        
-                        tabItem( # Begin 'About' page
-                          tabName = 'about',
-                          
-                          # Informational text 
-                          #h4('About the data'),
-                          #h5(style="text-align: justify;",
-                          #   'Data displayed with this tool are from the ', tags$a(href="https://carboni-que.github.io/", "CARBONIQUE project.", target="_blank")),
-                          
-                          br(),
-                          h4('About this visualization tool'),
-                          h5(style="text-align: justify;", 
-                             'This app was modified from the ', tags$a(href="https://ameriflux.shinyapps.io/version1/", "Ameriflux data visualization tool", target="_blank")),
-                          h5(style="text-align: justify;",
-                             'EDIT: If you are interested in learning more, improving this app, or building one yourself, check out the ', tags$a(href = 'https://shiny.rstudio.com/', 'RShiny package in R', target = 'blank'), ' or contact ', tags$a(href="https://sruehr.github.io/", "Sophie Ruehr.", target = 'blank'), 
-                             'Code for this app is available on ', tags$a(href = 'https://github.com/sruehr?tab=repositories', 'GitHub.', target = 'blank')), 
-                          #br(),
-                          #h4('Citation'),
-                          #h5('TBD'),
-                          
-                          
-                          br(),
-                          h4('Acknowledgements'),
-                          h5(style="text-align: justify;",
-                             'This application was developed by Sara Knox based on the original code by Sophie Ruehr, which is available is available on ', tags$a(href = 'https://github.com/sruehr?tab=repositories', 'GitHub.', target = 'blank')), 
-                          
-                        ) # End 'About' page
-                      ), # End all pages         
-                      hr(),
-                      h5('App designed and developed by Sara Knox, 2024.')
-                    ) # End dashboard body
-) # End UI
+source("scripts/UQAM_ini.R")
+for (f in list.files("functions", pattern = "\\.R$", full.names = TRUE)) source(f)
 
-# 4. Server
-server <- function(input, output, session) { # Begin server
-  
-  observeEvent(input$sites, { # Change output based on site selection
-    
-    # Update data 
-    yrs <- yrs_included(basepath,input$sites,level[1])
-    data <- read_data_all_years(basepath,yrs,input$sites,level,tv_input)
-    # add EBC columns
-    data <- create_EBC_columns(data)
-    data_units <- var_units(colnames(data),UnitCSVFilePath)
-    
-    # Update Y variable (time series) - find unique variable names
-    names_data <- names(data)
-    names_data_unique <- unique(gsub("_[[:digit:]]", "",names_data))  
-    
-    updateSelectInput(session, 'tscol', choices = names_data_unique[-1])
-    
-    # Update X variable (scatter plot)
-    updateSelectInput(session, 'onecol', choices = names(data[-c(1)]))
-    
-    # Update Y variable (scatter plot)
-    updateSelectInput(session, 'twocol',choices = names(data[,-c(1,2)]))
-    
-    # Update Y variable (diurnal)
-    updateSelectInput(session, 'dicol', choices = names(data[-c(1)]))
-    
-    # Update Y variable (radiation diagnostics)
-    updateSelectInput(session, 'radcol', choices = var_rad)
-    
-    # Update year (radiation diagnostics)
-    updateSelectInput(session, 'site_yr',choices = yrs)
-    
-    # Update X variable (EBC plot)
-    updateSelectInput(session, 'onecol_EBC', choices = grep("^AE_", colnames(data), value = TRUE))
-    
-    # Update Y variable (EBC plot)
-    updateSelectInput(session, 'twocol_EBC',choices = grep("H_LE", colnames(data), value = TRUE))
-    
-    # Update Y variable (cumulative plot)
-    updateSelectInput(session, 'cumcol', choices = grep("^(NEE|FCH4).*_uStar_f$", colnames(data), value = TRUE))
-    
-    # Update time series limits
-    updateSliderInput(inputId = "range",
-                      min = min(data$datetime, na.rm = T),
-                      max = max(data$datetime, na.rm = T),
-                      value = c(min(data$datetime, na.rm = T),
-                                max(data$datetime, na.rm = T)))
-    
-    # Select data for plots based on user inputs
-    selectedData <- reactive({ # Time series plots
-      if (length(grep(paste0("\\b",input$tscol,"\\b","_*"), names(data), value=TRUE)) == 0) {
-        data[, c("datetime",grep(paste0("^",input$tscol,"_"), names(data), value=TRUE))] # For cases with qualifiers
-      } else {
-        data[, c("datetime",grep(paste0("\\b",input$tscol,"\\b","_*"), names(data), value=TRUE))] # for cases without qualifiers
-      }
-    })
-    
-    selectedDatascatter<- reactive({ # Scatter plots
-      data[, c(input$onecol, input$twocol)] 
-    })
-    
-    selectedDataDiurnal <- reactive({ # Diurnal plots
-      data[(data$datetime >= input$range[1]) & (data$datetime <= input$range[2]), c(input$dicol)] 
-    })
-    
-    selectedDataRadiation <- reactive({ # Radiation diagnostic plots
-      data[, c("datetime",input$radcol)] 
-    })
-    
-    selectedDataEBC<- reactive({ # EBC plots
-      data[, c(input$onecol_EBC, input$twocol_EBC)] 
-    })
-    
-    selectedDataCumulative <- reactive({ # Radiation diagnostic plots
-      data[, c("datetime",input$cumcol)] 
-    })
-    
-    # OUTPUTS:  ----- 
-    
-    # a) Time series plots
-    output$timeseries_plots <- renderPlotly({ 
-      
-      if (length(grep(paste0("\\b", input$tscol, "\\b", "_*"), names(data), value = TRUE)) == 0) {
-        dat_names <- grep(paste0("^", input$tscol, "_"), names(data), value = TRUE)[1] # Get name of variable selected
-        ylabel <- paste0(dat_names, ' (', data_units$units[which(data_units$name == dat_names)], ')')
-      } else {
-        dat_names <- grep(paste0("\\b", input$tscol, "\\b", "_*"), names(data), value = TRUE)[1] # Get name of variable selected
-        ylabel <- paste0(dat_names, ' (', data_units$units[which(data_units$name == dat_names)], ')')
-      }
-      
-      df.long<-gather(selectedData(),variable,value,-datetime)
-      
-      p1 <- ggplot(df.long,aes(datetime,value,color=variable))+geom_point(alpha = 0.3, size = 0.5)+
-        theme_bw() + # plot theme
-        theme(text=element_text(size=20), #change font size of all text
-              axis.text=element_text(size=15), #change font size of axis text
-              axis.title=element_text(size=12), #change font size of axis titles
-              plot.title=element_text(size=20), #change font size of plot title
-              legend.text=element_text(size=8), #change font size of legend text
-              legend.title=element_text(size=8),
-              plot.margin = margin(t = 20,  # Top margin
-                                   r = 30,  # Right margin
-                                   b = 30,  # Bottom margin
-                                   l = 30)) + # Left margin +
-        ylab(ylabel) +
-        xlab('Date')  #+ # relabl X axis
-        #xlim(input$range[1], input$range[2]) # change date limits to user input 
-      
-      # Remove legend if there aren't multiple variables
-      if (length(selectedData())<=2){
-        p1 <- p1 + theme(legend.position="none")
-      }
-      p1 <- ggplotly(p1) %>% toWebGL()  # create plotly 
-    }) # End plot render
-    
-    # b) diagnostics plots - Could add later
-    
-    # c) Scatter plots
-    output$scatter_plots <- renderPlotly({ 
-      y_names <- input$twocol # Get name of variable selected
-      ylabel <- y_names # Could update this
-      
-      x_names <- input$onecol # Get name of variable selected
-      xlabel <- x_names # Could update this
-      
-      df <- selectedDatascatter()
-      df$year <- year(data$datetime) 
-      
-      scatter_plot_QCQA(df,xlabel,ylabel, xlabel,ylabel,1)
-      
-    }) # End plot render
-    
-    output$scatter_diagnostics <- renderPlot({ 
-      y_names <- input$twocol # Get name of variable selected
-      ylabel <- y_names # Could update this
-      
-      x_names <- input$onecol # Get name of variable selected
-      xlabel <- x_names # Could update this
-      
-      df <- selectedDatascatter()
-      df$year <- year(data$datetime) 
-      
-      R2_slope_QCQA(df,xlabel,ylabel)
-      
-    }) # End plot render
-    
-    # d) Diurnal plot
-    output$diurnal <- renderPlotly({ 
-      
-      dat_names <- input$dicol # Get name of selected variable
-      ylabel <- paste0(dat_names, ' (', data_units$units[which(data_units$name == dat_names)], ')')
-      
-      dt <- data$datetime[(data$datetime >= input$range[1]) & (data$datetime <= input$range[2])]
-      DataDiurnal <- data.frame(datetime = dt)
-      DataDiurnal$Month <- as.numeric(format(dt, "%m"))  
-      DataDiurnal$Hour <- as.numeric(format(dt, "%H%M"))  
-      
-      DataDiurnal$Var <- selectedDataDiurnal()
-      
-      data_diurnal <- DataDiurnal %>% 
-        group_by(Month, Hour) %>% 
-        summarise(Average = mean(Var, na.rm = TRUE), .groups = "drop")
-      
-      # Compute global min/max with a buffer to avoid extreme compression
-      global_min <- min(data_diurnal$Average, na.rm = TRUE)
-      global_max <- max(data_diurnal$Average, na.rm = TRUE)
-      range_buffer <- (global_max - global_min) * 0.1  # Add 10% buffer to limits
-      
-      # Ensure reasonable limits that work across different variable ranges
-      y_min <- global_min - range_buffer
-      y_max <- global_max + range_buffer
-      
-      month_labs <- c('1' = 'January', '2' = 'February', '3' = 'March',
-                      '4' = 'April', '5' = 'May', '6' = 'June',
-                      '7' = 'July', '8' = 'August', '9' = 'September',
-                      '10' = 'October', '11' = 'November', '12' = 'December')
-      
-      month_labeller <- labeller(Month = function(levels) month_labs[as.character(levels)])
-      
-      diurnal_plot <- ggplot(data = data_diurnal, aes(x = Hour, y = Average)) +
-        geom_line(color = 'black') +
-        facet_wrap(~ Month, nrow = 3, ncol = 4, scales = "fixed", labeller = month_labeller) +  
-        scale_x_continuous(breaks = c(0, 600, 1200, 1800, 2330),
-                           labels = c("00:00", "06:00", "12:00", "18:00", "24:00")) +
-        scale_y_continuous(limits = c(y_min, y_max), expand = c(0, 0)) +  
-        coord_cartesian(ylim = c(y_min, y_max)) +  # Ensures consistent y-axis scaling
-        theme_minimal() +
-        theme(
-          axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
-          panel.spacing.x = unit(3, "mm"),  # Reduce horizontal spacing
-          panel.spacing.y = unit(3, "mm"),  # Reduce vertical spacing
-          strip.text = element_text(size = 12, margin = margin(t = 1, b = 1)),  # Reduce label padding
-          strip.placement = "outside",
-          strip.background = element_blank()
-        ) +  
-        xlab("Hour:Minute") +
-        ylab(ylabel)
-      
-      ggplotly(diurnal_plot)  
-    }) # End plot render
-    
-    # e) radiation plots
-    output$radiation1 <- renderPlotly({ 
-      rad_name <- input$radcol # Get name of variable selected
-      #ylabel <- rad_names # Could update this
-      
-      # Rename variables to remove variable prefix
-      df <- selectedDataRadiation()
-      
-      df <- df[year(df$datetime) == as.numeric(input$site_yr), ]
-      
-      names(df) <- sub(paste0('^',rad_name,'.'), '', names(df))
-      
-      # Calculate potential radiation
-      sites_coordinates_filtered <-  sites_coordinates[sites_coordinates['Site'] == input$sites, ] # extra standard meridian/lat/long from excel file
-      df$pot_rad <- potential_rad_generalized(as.numeric(sites_coordinates_filtered$Standard_Meridian), as.numeric(sites_coordinates_filtered$Longitude), as.numeric(sites_coordinates_filtered$Latitude), df$datetime,yday(df$datetime))
-      
-      # Calculate diurnal composite
-      diurnal.composite <- diurnal_composite_rad_single_var(df,'pot_rad',rad_name,15,48)
-      
-      # Summarize data to filter out dates where diurnal composite has all -Inf values
-      df_summary <- diurnal.composite %>%
-        group_by(firstdate) %>%
-        summarize(rad_na_count = sum(is.na(!!sym(rad_name))), # find number of -Inf values for rad var
-                  count = n())                                 # Count number of observations per date
-      
-      # Remove dates with only -Inf points
-      keep <- df_summary %>%
-        filter(rad_na_count != count) 
-      
-      diurnal.composite <- diurnal.composite[diurnal.composite$firstdate %in% keep$firstdate, ]
-      
-      if (grepl("SW_IN", rad_name, fixed = TRUE) == TRUE) {
-        p_rad_dirnal <- SWIN_vs_potential_rad(diurnal.composite,rad_name)} else {
-          p_rad_dirnal <- PPFDIN_vs_potential_rad(diurnal.composite,rad_name)
-        }
-    }) # End plot render
-    
-    output$radiation2 <- renderPlotly({ 
-      rad_name <- input$radcol # Get name of variable selected
-      #ylabel <- rad_names # Could update this
-      
-      # Rename variables to remove variable prefix
-      df <- selectedDataRadiation()
-      
-      df <- df[year(df$datetime) == as.numeric(input$site_yr), ]
-      
-      names(df) <- sub(paste0('^',rad_name,'.'), '', names(df))
-      
-      # Calculate potential radiation
-      sites_coordinates_filtered <-  sites_coordinates[sites_coordinates['Site'] == input$sites, ] # extra standard meridian/lat/long from excel file
-      df$pot_rad <- potential_rad_generalized(as.numeric(sites_coordinates_filtered$Standard_Meridian), as.numeric(sites_coordinates_filtered$Longitude), as.numeric(sites_coordinates_filtered$Latitude), df$datetime,yday(df$datetime))
-      
-      # Calculate diurnal composite
-      diurnal.composite <- diurnal_composite_rad_single_var(df,'pot_rad',rad_name,15,48)
-      #diurnal.composite <- diurnal_composite_rad_single_var[is.finite(diurnal.composite$potential_radiation), ]
-      
-      # Summarize data to filter out dates where diurnal composite has all -Inf values
-      df_summary <- diurnal.composite %>%
-        group_by(firstdate) %>%
-        summarize(rad_na_count = sum(is.na(!!sym(rad_name))), # find number of -Inf values for rad var
-                  count = n())                                 # Count number of observations per date
-      
-      # Remove dates with only -Inf points
-      keep <- df_summary %>%
-        filter(rad_na_count != count) 
-      
-      diurnal.composite <- diurnal.composite[diurnal.composite$firstdate %in% keep$firstdate, ]
-      
-      xcorr_rad(diurnal.composite,rad_name)
-    }) # End plot render
-    
-    # f) Energy balance closure plots
-    output$EBC_plots <- renderPlotly({ 
-      y_names <- input$twocol_EBC # Get name of variable selected
-      ylabel <- y_names # Could update this
-      
-      x_names <- input$onecol_EBC # Get name of variable selected
-      xlabel <- x_names # Could update this
-      
-      df <- selectedDataEBC()
-      df$year <- year(data$datetime) 
-      
-      scatter_plot_QCQA(df,xlabel,ylabel, xlabel,ylabel,1)
-      
-    }) # End plot render
-    
-    output$EBC_diagnostics <- renderPlot({ 
-      y_names <- input$twocol_EBC # Get name of variable selected
-      ylabel <- y_names # Could update this
-      
-      x_names <- input$onecol_EBC # Get name of variable selected
-      xlabel <- x_names # Could update this
-      
-      df <- selectedDataEBC()
-      df$year <- year(data$datetime) 
-      
-      R2_slope_QCQA(df,xlabel,ylabel)
-      
-    }) # End plot render
-    
-    # g) Cumulative plot
-    output$cumulative <- renderPlotly({
-      
-      if (any(grepl("ThirdStage", level))) {
-        
-        # Create conversion factors
-        conv_factor <- data.frame(12.01/(10^6)*(60*60*24),12.01/(10^9)*(60*60*24),(60*60*24)/(10^6))
-        colnames(conv_factor) <- c("CO2","CH4","Energy")
-        
-        # Create string for conversion factor variable names
-        conv_factor_vars <- c("CO2","CH4","Energy")
-        
-        # Create labels for units
-        conv_factor_units_cum <- data.frame("gC m-2","gC m-2","MJ m-2")
-        colnames(conv_factor_units_cum) <- c("CO2","CH4","Energy")
-        
-        cumulative_names <- input$cumcol # Get name of selected variable
-        
-        # Initialize index variable
-        index <- NULL
-        
-        # Check if NEE or FCH4 is in the matching columns and assign index
-        if (grepl("^NEE", cumulative_names) == TRUE) {
-          index <- 1
-        } else if (grepl("^FCH4", cumulative_names) == TRUE) {
-          index <- 2
-        }
-        
-        df <- selectedDataCumulative()
-        colnames(df)[2] <- "var"
-        
-        df$year <- year(data$datetime) 
-        df$DOY <- yday(data$datetime) 
-        
-        cf <- as.numeric(conv_factor[index])
-        units_cf <- conv_factor_units_cum[index]
-        
-        # Determine which years are a full year of data
-        nyrs <- unique(df$year)
-        
-        count_yr <- df %>% 
-          group_by(year) %>%
-          dplyr::summarize(count = sum(!is.na(var)))
-        
-        yrs <- nyrs[count_yr$count >=17520] # Greater or equal to 365 days (i.e. 17520 observations)
-        
-        df2 <- with(df,df[(year >= yrs[1] & year <= yrs[length(yrs)]),])
-        
-        daily.cum <- df2 %>%
-          group_by(year,DOY) %>%
-          dplyr::summarize(var = mean(var)*cf, 
-                           DOY = first(DOY),
-                           year = as.factor(first(year)))
-        
-        flux.cum <- daily.cum %>%
-          group_by(year) %>%
-          dplyr::summarize(var_cum = cumsum(var),
-                           DOY = DOY)%>%
-          ungroup()
-        
-        p <- ggplot() +
-          geom_hline(yintercept = 0, linetype = "dotted", color = "grey10", size = 0.1)+
-          geom_line(data = flux.cum, aes(x = DOY, y = var_cum, color = year))+ 
-          ylab(paste0(cumulative_names," (",units_cf,")",sep = ""))
-        ggplotly(p) 
-        
-      }else{
-        ggplot() +
-          annotate("text", x = 0.5, y = 0.5, label = "No Third Stage Data Available", size = 6, hjust = 0.5, vjust = 0.5) +
-          theme_void() +
-          xlim(0, 1) + ylim(0, 1)
-      }
-    }) # End plot render
-    
-    # e) All sites plot
-    output$all_plots <- renderPlotly({ 
-      xlab <- paste(input$xcol_all)
-      ylab <- paste(input$ycol_all)
-      
-      if(xlab != 'datetime') {
-        dat_names <- xlab # Get name of variable selected
-        xlab <- paste0(dat_names, ' (', data_units_all$units[which(data_units_all$name == dat_names)], ')')
-      }
-      
-      dat_names2 <- ylab
-      ylab <- paste0(dat_names2, ' (', data_units_all$units[which(data_units_all$name == dat_names2)], ')')
-      
-      p3 <- ggplot(data_all) +
-        geom_point(aes(x = .data[[input$xcol_all]],
-                       y = .data[[input$ycol_all]],
-                       color = .data[['site']],
-                       group = .data[['site']]),
-                   na.rm = T, alpha = 0.3, size = 0.5) + # color of line
-        theme_bw() + # plot theme
-        theme(text=element_text(size=20), #change font size of all text
-              axis.text=element_text(size=15), #change font size of axis text
-              axis.title=element_text(size=15), #change font size of axis titles
-              plot.title=element_text(size=20), #change font size of plot title
-              legend.text=element_text(size=8), #change font size of legend text
-              legend.title=element_text(size=10)) +
-        xlab(xlab) +
-        ylab(ylab)
-      
-      p3 <- ggplotly(p3) %>% toWebGL() 
-    }) # End all sites plot
-  })# End server
+asset_version <- "2026.09.1"   # bump when www/ files change, so browsers reload them
+
+cq_theme <- bs_theme(
+  version = 5, preset = "bootstrap",   # plain Bootstrap 5 (no extra Open Sans download)
+  bg = "#FFFFFF", fg = cq_brand$ink,
+  primary = cq_brand$brown, secondary = cq_brand$muted,
+  success = "#5A9E2F", info = "#2A9BC4", warning = "#E0A200", danger = "#C2572B",
+  base_font = font_collection("Roboto", "system-ui", "-apple-system", "Segoe UI", "Arial", "sans-serif"),
+  heading_font = font_collection("Roboto", "system-ui", "-apple-system", "Segoe UI", "Arial", "sans-serif"),
+  "font-size-base" = "0.94rem",
+  "border-radius" = "0.6rem",
+  "headings-font-weight" = "500",
+  "navbar-bg" = "#FFFFFF",
+  "link-color" = cq_brand$brown_dark
+)
+
+# 2. USER INTERFACE ---------------------------------------------------
+controls <- function(...) div(class = "cq-controls", ...)
+caption <- function(key) p(class = "cq-caption", i18n(key))
+plot_box <- function(id, height) div(class = "cq-plot-wrap", plotlyOutput(id, height = height))
+sel <- function(id, key, ch, width = NULL) {
+  selectInput(id, i18n(key), choices = ch$choices, selected = ch$selected, width = width)
 }
-# 5. RUN APP -----
+
+icon_download <- HTML('<svg class="cq-icon" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M8 1a.75.75 0 0 1 .75.75v6.69l2.22-2.22a.75.75 0 1 1 1.06 1.06l-3.5 3.5a.75.75 0 0 1-1.06 0l-3.5-3.5a.75.75 0 0 1 1.06-1.06l2.22 2.22V1.75A.75.75 0 0 1 8 1ZM2.75 11a.75.75 0 0 1 .75.75v1.5h9v-1.5a.75.75 0 0 1 1.5 0v2.25a.75.75 0 0 1-.75.75H2.75a.75.75 0 0 1-.75-.75v-2.25a.75.75 0 0 1 .75-.75Z"/></svg>')
+
+# plotly.js is requested with the page (not after the first plot arrives)
+plotly_page_deps <- htmltools::findDependencies(htmltools::as.tags(cq_empty_plot("")))
+
+brand <- tags$span(
+  class = "cq-brand",
+  tags$img(src = "img/CQ-Logo-Long-Color.svg", alt = "CARBONIQUE", class = "cq-logo"),
+  tags$span(class = "cq-brand-sub", i18n("app_title"))
+)
+
+lang_toggle <- div(
+  id = "lang", class = "cq-lang-toggle", role = "group", `aria-label` = "Language / Langue",
+  tags$button(type = "button", `data-lang` = "fr", "FR"),
+  tags$button(type = "button", `data-lang` = "en", "EN")
+)
+
+about_page <- function() {
+  div(
+    class = "cq-about",
+    card(
+      card_body(
+        tags$img(src = "img/CQ-Logo-Compact-Color.svg", alt = "CARBONIQUE", class = "cq-about-logo"),
+        div(class = "lang-en",
+            h3("About the data"),
+            p("CARBONIQUE studies the carbon cycle in Quebec wetlands. The five-year research program ",
+              "measures the net ecosystem carbon balance of open peatlands, wooded peatlands, forested swamps ",
+              "and coastal marshes, under natural and disturbed conditions."),
+            p("This tool shows the half-hourly data collected at the project's flux sites. It reads the ",
+              "cleaned database directly, so new data appear as soon as they are processed."),
+            p("Learn more at ", tags$a(href = "https://carbonique.ca", target = "_blank", "carbonique.ca"), "."),
+            h3("How to use it"),
+            tags$ul(
+              tags$li(tags$b("Site explorer: "), "pick a site and a period, then move between the tabs. ",
+                      "Every plot zooms (drag), resets (double-click) and can be saved as a PNG from its toolbar."),
+              tags$li(tags$b("All sites: "), "compare one variable across sites, over time or against another variable."),
+              tags$li(tags$b("Time series: "), "download the selected series as a CSV file.")
+            ),
+            h3("Acknowledgements"),
+            p("This application was developed by Sara Knox (2024), based on the ",
+              tags$a(href = "https://ameriflux.shinyapps.io/version1/", target = "_blank", "AmeriFlux data visualization tool"),
+              " by Sophie Ruehr. Server setup by Tim Elrick. Performance update, visual identity and French ",
+              "interface by David Trejo Cancino (2026)."),
+            p("Code: ", tags$a(href = "https://github.com/CANFLUX/carbonique_RShiny_app", target = "_blank",
+                               "github.com/CANFLUX/carbonique_RShiny_app"))
+        ),
+        div(class = "lang-fr",
+            h3("\u00c0 propos des donn\u00e9es"),
+            p("CARBONIQUE \u00e9tudie le cycle du carbone dans les milieux humides du Qu\u00e9bec. Ce programme de ",
+              "recherche de cinq ans mesure le bilan net de carbone des \u00e9cosyst\u00e8mes de tourbi\u00e8res ouvertes, ",
+              "tourbi\u00e8res bois\u00e9es, mar\u00e9cages arbor\u00e9s et marais c\u00f4tiers, en conditions naturelles et perturb\u00e9es."),
+            p("Cet outil affiche les donn\u00e9es semi-horaires recueillies aux sites de flux du projet. Il lit directement ",
+              "la base de donn\u00e9es nettoy\u00e9e : les nouvelles donn\u00e9es apparaissent d\u00e8s qu'elles sont trait\u00e9es."),
+            p("Pour en savoir plus : ", tags$a(href = "https://carbonique.ca", target = "_blank", "carbonique.ca"), "."),
+            h3("Mode d'emploi"),
+            tags$ul(
+              tags$li(tags$b("Exploration par site : "), "choisissez un site et une p\u00e9riode, puis parcourez les onglets. ",
+                      "Chaque graphique permet de zoomer (glisser), de r\u00e9initialiser (double-clic) et de s'enregistrer en PNG depuis sa barre d'outils."),
+              tags$li(tags$b("Tous les sites : "), "comparez une variable entre les sites, dans le temps ou en fonction d'une autre variable."),
+              tags$li(tags$b("S\u00e9ries temporelles : "), "t\u00e9l\u00e9chargez les s\u00e9ries choisies en CSV.")
+            ),
+            h3("Remerciements"),
+            p("Cette application a \u00e9t\u00e9 d\u00e9velopp\u00e9e par Sara Knox (2024) \u00e0 partir de ",
+              tags$a(href = "https://ameriflux.shinyapps.io/version1/", target = "_blank", "l'outil de visualisation d'AmeriFlux"),
+              " de Sophie Ruehr. Configuration du serveur : Tim Elrick. Mise \u00e0 jour des performances, identit\u00e9 visuelle ",
+              "et interface fran\u00e7aise : David Trejo Cancino (2026)."),
+            p("Code : ", tags$a(href = "https://github.com/CANFLUX/carbonique_RShiny_app", target = "_blank",
+                                "github.com/CANFLUX/carbonique_RShiny_app"))
+        )
+      )
+    )
+  )
+}
+
+ui <- function(request) {
+  sites <- available_sites()
+  head_assets <- tags$head(
+    tags$link(rel = "icon", type = "image/png", href = "img/favicon.png"),
+    tags$link(rel = "apple-touch-icon", href = "img/apple-touch-icon.png"),
+    tags$meta(name = "description", content = "CARBONIQUE flux tower data explorer"),
+    tags$link(rel = "stylesheet", href = paste0("carbonique.css?v=", asset_version)),
+    tags$script(HTML(paste0("window.CQ_I18N = ", jsonlite::toJSON(cq_i18n, auto_unbox = TRUE), ";"))),
+    tags$script(src = paste0("carbonique.js?v=", asset_version)),
+    htmltools::attachDependencies(tags$span(), plotly_page_deps)
+  )
+
+  if (!length(sites)) {
+    return(page_fluid(theme = cq_theme, head_assets,
+                      div(class = "cq-fatal", brand,
+                          p(tr("msg_db_missing", "en", path = main_dir)),
+                          p(tr("msg_db_missing", "fr", path = main_dir)))))
+  }
+
+  site0 <- if (default_site %in% sites) default_site else sites[1]
+  obj <- get_site_data(site0)
+  ch <- site_choices(obj)
+  all_vars <- var_of_interest
+
+  site_page <- layout_sidebar(
+    sidebar = sidebar(
+      width = 285, class = "cq-sidebar",
+      selectInput("site", i18n("lbl_site"), choices = sites, selected = site0),
+      radioButtons("period", i18n("lbl_period"),
+                   choiceNames = list(i18n("period_all"), i18n("period_30d"), i18n("period_90d"),
+                                      i18n("period_1y"), i18n("period_custom")),
+                   choiceValues = c("all", "30d", "90d", "1y", "custom"), selected = "all"),
+      conditionalPanel(
+        "input.period == 'custom'",
+        dateRangeInput("dates", i18n("lbl_dates"),
+                       start = as.Date(obj$first), end = as.Date(obj$last),
+                       separator = " \u2192 ", weekstart = 1)
+      ),
+      p(class = "cq-help", i18n("period_help")),
+      uiOutput("site_meta")
+    ),
+    uiOutput("site_stats"),
+    navset_card_underline(
+      id = "site_tab",
+      nav_panel(
+        i18n("tab_ts"), value = "ts",
+        controls(
+          sel("ts_var", "lbl_variable", ch$ts_var, width = "320px"),
+          radioButtons("ts_res", i18n("lbl_resolution"), inline = TRUE,
+                       choiceNames = list(i18n("res_30"), i18n("res_daily")),
+                       choiceValues = c("30min", "daily")),
+          div(class = "cq-control-end",
+              downloadButton("ts_csv", tagList(icon_download, i18n("btn_csv")),
+                             class = "btn-outline-primary btn-sm", icon = NULL))
+        ),
+        uiOutput("ts_desc"),
+        plot_box("ts_plot", "440px"),
+        caption("cap_ts")
+      ),
+      nav_panel(
+        i18n("tab_scatter"), value = "scatter",
+        controls(
+          sel("sc_x", "lbl_x", ch$sc_x, width = "240px"),
+          sel("sc_y", "lbl_y", ch$sc_y, width = "240px"),
+          div(class = "cq-control-check", checkboxInput("sc_outliers", i18n("lbl_outliers"), FALSE))
+        ),
+        uiOutput("sc_text"),
+        plot_box("sc_plot", "480px"),
+        caption("cap_scatter"),
+        h6(class = "cq-subhead", i18n("card_fit")),
+        plot_box("sc_fit", "230px"),
+        caption("cap_fit")
+      ),
+      nav_panel(
+        i18n("tab_diurnal"), value = "diurnal",
+        controls(sel("di_var", "lbl_variable", ch$di_var, width = "260px")),
+        plot_box("di_plot", "640px"),
+        caption("cap_diurnal")
+      ),
+      nav_panel(
+        i18n("tab_rad"), value = "rad",
+        controls(
+          sel("rad_var", "lbl_rad_var", ch$rad_var, width = "220px"),
+          sel("rad_year", "lbl_year", ch$rad_year, width = "140px")
+        ),
+        uiOutput("rad_plot_ui"),
+        uiOutput("rad_ccf_ui")
+      ),
+      nav_panel(
+        i18n("tab_ebc"), value = "ebc",
+        controls(
+          sel("ebc_x", "lbl_ae", ch$ebc_x, width = "240px"),
+          sel("ebc_y", "lbl_turb", ch$ebc_y, width = "240px"),
+          div(class = "cq-control-check", checkboxInput("ebc_outliers", i18n("lbl_outliers"), FALSE))
+        ),
+        uiOutput("ebc_text"),
+        plot_box("ebc_plot", "480px"),
+        caption("cap_ebc"),
+        h6(class = "cq-subhead", i18n("card_fit")),
+        plot_box("ebc_fit", "230px"),
+        caption("cap_fit")
+      ),
+      nav_panel(
+        i18n("tab_cum"), value = "cum",
+        if (any(grepl("ThirdStage", level))) controls(sel("cum_var", "lbl_flux", ch$cum_var, width = "260px")),
+        plot_box("cum_plot", "460px"),
+        caption("cap_cum")
+      )
+    )
+  )
+
+  all_page <- layout_sidebar(
+    sidebar = sidebar(
+      width = 285, class = "cq-sidebar",
+      selectInput("xcol_all", i18n("lbl_xall"), choices = all_vars, selected = "datetime"),
+      selectInput("ycol_all", i18n("lbl_yall"), choices = all_vars[-1], selected = "TA"),
+      radioButtons("all_res", i18n("lbl_resolution"), inline = TRUE,
+                   choiceNames = list(i18n("res_30"), i18n("res_daily")),
+                   choiceValues = c("30min", "daily"), selected = "daily"),
+      checkboxGroupInput("all_sites", i18n("lbl_sites"), choices = sites, selected = sites)
+    ),
+    card(
+      class = "cq-card",
+      card_body(plot_box("all_plot", "600px"), caption("cap_all"))
+    )
+  )
+
+  # Light navbar. bslib 0.9+ takes this through navbar_options(); older versions
+  # take `inverse` directly.
+  navbar_args <- if (exists("navbar_options", envir = asNamespace("bslib"))) {
+    list(navbar_options = bslib::navbar_options(inverse = FALSE))
+  } else {
+    list(inverse = FALSE)
+  }
+
+  do.call(page_navbar, c(list(
+    nav_panel(i18n("nav_site"), value = "site", site_page),
+    nav_panel(i18n("nav_all"), value = "all", all_page),
+    nav_panel(i18n("nav_about"), value = "about", about_page()),
+    nav_spacer(),
+    nav_item(lang_toggle),
+    id = "nav",
+    title = brand,
+    window_title = "CARBONIQUE \u00b7 Data explorer",
+    theme = cq_theme,
+    fillable = FALSE,
+    header = head_assets,
+    footer = div(class = "cq-footer", i18n("footer"),
+                 tags$a(href = "https://carbonique.ca", target = "_blank", "carbonique.ca"))
+  ), navbar_args))
+}
+
+# 3. SERVER -------------------------------------------------------------
+server <- function(input, output, session) {
+
+  lang <- reactive(if (identical(input$lang, "fr")) "fr" else "en")
+
+  # The selected site's data (read from disk only when its files change)
+  site_obj <- reactive({
+    req(input$site)
+    obj <- get_site_data(input$site)
+    validate(need(!is.null(obj), tr("msg_no_data", lang())))
+    obj
+  })
+  site_key <- reactive(paste(site_obj()$site, site_obj()$signature))
+
+  # Keep every selector in sync with the site. Current choices are kept when the
+  # new site has them. Inputs that change are frozen until the browser confirms
+  # the update, so no plot is drawn twice or with a stale selection.
+  observeEvent(site_obj(), {
+    ids <- c("ts_var", "sc_x", "sc_y", "di_var", "rad_var", "rad_year", "ebc_x", "ebc_y", "cum_var")
+    cur <- lapply(stats::setNames(ids, ids), function(id) input[[id]])
+    ch <- site_choices(site_obj(), cur)
+    prev <- session$userData$choices
+    session$userData$choices <- ch
+    if (is.null(prev)) return()          # first site: the page was built with these choices
+    for (id in ids) {
+      same_choices <- identical(ch[[id]]$choices, prev[[id]]$choices)
+      same_sel <- identical(unname(ch[[id]]$selected), cur[[id]] %||% character(0))
+      if (!same_choices || !same_sel) {
+        freezeReactiveValue(input, id)
+        updateSelectInput(session, id, choices = ch[[id]]$choices, selected = ch[[id]]$selected)
+      }
+    }
+  })
+
+  # Rows of the selected period
+  period_key <- reactive({
+    if (identical(input$period, "custom")) paste("custom", paste(input$dates, collapse = "_")) else input$period
+  })
+  period_rows <- reactive({
+    obj <- site_obj(); dt <- obj$data
+    end <- obj$last; start <- obj$first
+    r <- switch(input$period %||% "all",
+                "30d" = c(end - 30 * 86400, end),
+                "90d" = c(end - 90 * 86400, end),
+                "1y"  = c(end - 365 * 86400, end),
+                "custom" = {
+                  req(length(input$dates) == 2, !anyNA(input$dates))
+                  c(as.POSIXct(as.character(input$dates[1]), tz = "UTC"),
+                    as.POSIXct(as.character(input$dates[2]), tz = "UTC") + 86400)
+                },
+                c(start, end))
+    which(dt$datetime >= r[1] & dt$datetime <= r[2])
+  })
+  period_data <- function(cols) {
+    obj <- site_obj(); rows <- period_rows()
+    d <- data.frame(datetime = obj$data$datetime[rows])
+    for (cl in unique(cols)) d[[cl]] <- obj$data[[cl]][rows]
+    d$year <- as.integer(format(d$datetime, "%Y"))
+    d
+  }
+
+  # Sidebar: data level and location
+  output$site_meta <- renderUI({
+    obj <- site_obj(); co <- site_coordinates(obj$site); l <- lang()
+    loc <- if (is.null(co)) tr("no_coords_short", l) else
+      sprintf("%.4f\u00b0 N, %.4f\u00b0 W", co$lat, abs(co$lon))
+    div(class = "cq-meta",
+        div(class = "cq-meta-row", span(class = "cq-meta-label", tr("lbl_level", l)),
+            span(paste(level, collapse = ", "))),
+        div(class = "cq-meta-row", span(class = "cq-meta-label", tr("lbl_location", l)), span(loc)))
+  })
+
+  # Overview tiles
+  output$site_stats <- renderUI({
+    obj <- site_obj(); l <- lang(); dt <- obj$data
+    days <- floor(as.numeric(difftime(Sys.time(), obj$last, units = "days")))
+    ago <- if (days <= 0) tr("stat_today", l) else if (days == 1) tr("stat_day_ago", l) else tr("stat_days_ago", l, n = days)
+    stale <- days > 3
+    flux <- intersect(c("FC", "NEE", "LE", "H"), obj$vars)[1]
+    if (is.na(flux)) flux <- obj$vars[1]
+    win <- dt$datetime > obj$last - 30 * 86400 & dt$datetime <= obj$last
+    cov <- mean(!is.na(dt[[flux]][win]))
+    yrs <- range(obj$years)
+    tile <- function(cls, label, value, sub, extra = NULL) {
+      div(class = paste("cq-stat", cls),
+          div(class = "cq-stat-label", label),
+          div(class = "cq-stat-value", value),
+          div(class = "cq-stat-sub", sub), extra)
+    }
+    div(class = "cq-stats",
+        tile("t1", tr("stat_last", l),
+             tagList(format(obj$last, "%Y-%m-%d"), span(class = "cq-stat-time", format(obj$last, "%H:%M"))),
+             if (stale) span(class = "cq-warn", "\u26a0 ", ago) else ago),
+        tile("t2", tr("stat_record", l), if (yrs[1] == yrs[2]) yrs[1] else paste(yrs[1], yrs[2], sep = "-"),
+             tr("stat_since", l, date = format(obj$first, "%Y-%m-%d"))),
+        tile("t3", tr("stat_vars", l), length(obj$vars), tr("stat_vars_sub", l)),
+        tile("t4", tr("stat_cov", l, var = flux), paste0(round(100 * cov), if (l == "fr") "\u00a0%" else "%"),
+             tr("stat_cov_sub", l),
+             div(class = "cq-bar", div(class = "cq-bar-fill", style = sprintf("width:%.0f%%", 100 * cov)))))
+  })
+
+  # a) Time series ------------------------------------------------------
+  ts_cols <- reactive({
+    obj <- site_obj(); req(input$ts_var)
+    cols <- obj$vars[gsub("_[[:digit:]]", "", obj$vars) == input$ts_var]
+    req(length(cols) > 0)
+    cols
+  })
+  output$ts_desc <- renderUI({
+    obj <- site_obj(); cols <- ts_cols()
+    u <- obj$units[match(cols[1], obj$units$name), ]
+    if (is.na(u$description) || !nzchar(u$description)) return(NULL)
+    p(class = "cq-var-desc", tags$b(input$ts_var), " \u00b7 ", u$description,
+      if (nzchar(u$units)) paste0(" (", u$units, ")"))
+  })
+  output$ts_plot <- bindCache(
+    renderPlotly(plot_timeseries(site_obj(), ts_cols(), period_rows(), input$ts_res, lang())),
+    site_key(), ts_cols(), period_key(), input$ts_res, lang()
+  )
+  output$ts_csv <- downloadHandler(
+    filename = function() paste0(input$site, "_", input$ts_var, "_", format(Sys.Date(), "%Y%m%d"), ".csv"),
+    content = function(file) {
+      d <- period_data(ts_cols()); d$year <- NULL
+      d$datetime <- format(d$datetime, "%Y-%m-%d %H:%M")
+      data.table::fwrite(d, file, na = "NA")
+    }
+  )
+
+  # b) Scatter plots ------------------------------------------------------
+  sc_fit <- reactive({
+    obj <- site_obj(); req(input$sc_x %in% obj$vars, input$sc_y %in% obj$vars)
+    scatter_fit(period_data(c(input$sc_x, input$sc_y)), input$sc_x, input$sc_y)
+  })
+  output$sc_text <- renderUI(p(class = "cq-fit", scatter_fit_text(sc_fit(), lang())))
+  output$sc_plot <- bindCache(
+    renderPlotly({
+      obj <- site_obj()
+      scatter_plot_QCQA(NULL, input$sc_x, input$sc_y, unit_label(input$sc_x, obj$units),
+                        unit_label(input$sc_y, obj$units), input$sc_outliers, lang = lang(), fit = sc_fit())
+    }),
+    site_key(), input$sc_x, input$sc_y, period_key(), input$sc_outliers, lang()
+  )
+  output$sc_fit <- bindCache(
+    renderPlotly(R2_slope_QCQA(NULL, input$sc_x, input$sc_y, lang = lang(), fit = sc_fit())),
+    site_key(), input$sc_x, input$sc_y, period_key(), lang()
+  )
+
+  # c) Diurnal cycle ------------------------------------------------------
+  output$di_plot <- bindCache(
+    renderPlotly({
+      obj <- site_obj(); req(input$di_var %in% obj$vars)
+      d <- period_data(input$di_var)
+      plot_diurnal(d$datetime, d[[input$di_var]], input$di_var, obj$units, lang())
+    }),
+    site_key(), input$di_var, period_key(), lang()
+  )
+
+  # d) Radiation diagnostics ----------------------------------------------
+  rad_comp <- reactive({
+    obj <- site_obj()
+    req(input$rad_var %in% obj$vars, input$rad_year)
+    radiation_composite(obj, input$rad_var, input$rad_year)
+  })
+  rad_message <- reactive({
+    obj <- site_obj()
+    if (!length(intersect(var_rad, obj$vars))) return(tr("msg_no_rad", lang()))
+    if (is.null(site_coordinates(obj$site))) return(tr("msg_no_coords", lang(), site = obj$site))
+    NULL
+  })
+  # The radiation panel grows with the number of 15-day windows (6 per row).
+  # Its height only changes when the row count changes, to avoid redrawing.
+  rad_height <- reactiveVal(840)
+  observe({
+    req(identical(input$site_tab, "rad"), identical(input$nav, "site"))
+    n <- if (is.null(rad_message())) length(unique(rad_comp()$firstdate)) else 0
+    h <- if (n == 0) 220 else 90 + max(1, ceiling(n / 6)) * 150
+    if (!identical(h, isolate(rad_height()))) rad_height(h)
+  })
+  output$rad_plot_ui <- renderUI(tagList(plot_box("rad_plot", paste0(rad_height(), "px")),
+                                          if (is.null(rad_message())) caption("cap_rad")))
+  output$rad_ccf_ui <- renderUI({
+    if (!is.null(rad_message())) return(NULL)
+    tagList(plot_box("rad_ccf", "300px"), caption("cap_ccf"))
+  })
+  output$rad_plot <- bindCache(
+    renderPlotly({
+      if (!is.null(rad_message())) return(cq_empty_plot(rad_message()))
+      if (grepl("SW_IN", input$rad_var, fixed = TRUE)) {
+        SWIN_vs_potential_rad(rad_comp(), input$rad_var, lang())
+      } else {
+        PPFDIN_vs_potential_rad(rad_comp(), input$rad_var, lang())
+      }
+    }),
+    site_key(), input$rad_var, input$rad_year, lang()
+  )
+  output$rad_ccf <- bindCache(
+    renderPlotly({
+      if (!is.null(rad_message())) return(cq_empty_plot(rad_message()))
+      xcorr_rad(rad_comp(), input$rad_var, lang())
+    }),
+    site_key(), input$rad_var, input$rad_year, lang()
+  )
+
+  # e) Energy balance closure ---------------------------------------------
+  ebc_fit <- reactive({
+    obj <- site_obj(); req(input$ebc_x %in% obj$vars, input$ebc_y %in% obj$vars)
+    scatter_fit(period_data(c(input$ebc_x, input$ebc_y)), input$ebc_x, input$ebc_y)
+  })
+  ebc_ok <- reactive(length(grep("^AE_", site_obj()$vars)) > 0 && "H_LE" %in% site_obj()$vars)
+  output$ebc_text <- renderUI({
+    if (!ebc_ok()) return(NULL)
+    p(class = "cq-fit", scatter_fit_text(ebc_fit(), lang()))
+  })
+  output$ebc_plot <- bindCache(
+    renderPlotly({
+      if (!ebc_ok()) return(cq_empty_plot(tr("msg_no_ebc", lang())))
+      obj <- site_obj()
+      scatter_plot_QCQA(NULL, input$ebc_x, input$ebc_y, unit_label(input$ebc_x, obj$units),
+                        unit_label(input$ebc_y, obj$units), input$ebc_outliers,
+                        one_to_one = TRUE, lang = lang(), fit = ebc_fit())
+    }),
+    site_key(), input$ebc_x, input$ebc_y, period_key(), input$ebc_outliers, lang()
+  )
+  output$ebc_fit <- bindCache(
+    renderPlotly({
+      if (!ebc_ok()) return(cq_empty_plot(tr("msg_no_ebc", lang())))
+      R2_slope_QCQA(NULL, input$ebc_x, input$ebc_y, lang = lang(), fit = ebc_fit())
+    }),
+    site_key(), input$ebc_x, input$ebc_y, period_key(), lang()
+  )
+
+  # f) Cumulative fluxes --------------------------------------------------
+  output$cum_plot <- bindCache(
+    renderPlotly(plot_cumulative(site_obj(), input$cum_var, lang())),
+    site_key(), input$cum_var, lang()
+  )
+
+  # g) All sites ------------------------------------------------------------
+  all_obj <- reactive(get_all_sites_data())
+  output$all_plot <- bindCache(
+    renderPlotly({
+      req(input$xcol_all, input$ycol_all)
+      plot_all_sites(all_obj(), input$xcol_all, input$ycol_all, input$all_sites, input$all_res, lang())
+    }),
+    all_obj()$signature, input$xcol_all, input$ycol_all, sort(input$all_sites), input$all_res, lang()
+  )
+}
+
+# 4. RUN APP -----
 shinyApp(ui = ui, server = server)

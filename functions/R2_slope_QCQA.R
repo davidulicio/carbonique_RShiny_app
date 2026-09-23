@@ -1,107 +1,37 @@
-# Figure for comparing the R2 and slope of PPDF_IN vs. SW_IN
+# Figure for comparing the R2 and slope of two variables, year by year
 # By Sara Knox
-# CreatedJanuary 5, 2023
+# Created January 5, 2023
+# 2026: native plotly. R2 and slope are drawn as two side-by-side panels
+# instead of one chart with two y axes, so each keeps its own honest scale.
+# Uses the per-year fits computed by scatter_fit() (lm(y ~ x) for each year).
 
 # Input
-# data = dataframe with relevant variables
-# var1 = variable 1 name
-# var2 = variable 2 name
+# data = dataframe with relevant variables (and "year" or "datetime")
+# var1 = x variable name
+# var2 = y variable name
 
-# year = "year"
-
-R2_slope_QCQA <-
-  function(data,
-           var1,
-           var2) {
-    
-    # Replace any NA values with NaN
-    data <- data %>%
-      mutate(across(everything(), ~ replace(., is.na(.), NaN)))
-    
-    # Create year column if doesn't exist
-    if ("year" %in% colnames(data)) {
-      df <- (data[, (colnames(data) %in% c(var1, var2, "year"))])
-    } else {
-      data$year <- as.numeric(format(data$datetime, "%Y"))
-      df <- (data[, (colnames(data) %in% c(var1, var2, "year"))])
-    }
-    
-    if (var1 == var2) {
-      df <- data.frame(df[, 1],df)
-    }
-    
-    colnames(df) <- c("y", "x", "year")
-    
-    # calculate slope and R2 per year 
-    if (length(unique(df$year)) == 1 | length(df$year[df$year == unique(df$year)[2]]) == 1) {
-      
-      # If there's only one year of data
-      df.model.summary <- df %>%
-        do({
-          mod = lm(x ~ y, data = .)
-          data.frame(year = df$year[1],
-                     Intercept = coef(mod)[1],
-                     Slope = coef(mod)[2],
-                     R2 = summary(mod)$adj.r.squared)
-        })
-      
-    } else {
-      
-      # If there's multiple years of data
-      
-      # Summarize data
-      df_summary <- df %>%
-        group_by(year) %>%
-        summarize(nan_x = sum(is.nan(x)),  # find number of NaN values for x
-                  nan_y = sum(is.nan(y)),  # find number of NaN values for x
-            count = n()                    # Count number of observations per date
-          )
-        
-      # Remove any years with only one data point
-      years_to_keep <- df_summary %>%
-        filter(count > 1 & (nan_y != count) & (nan_x != count)) 
-      
-      df <- df %>%
-        filter(year %in% years_to_keep$year) 
-      
-      # Now calculate R2 and slope for each year
-      df.model.summary <- df %>%
-        group_by(year) %>%
-        do({
-          mod = lm(x ~ y, data = .)
-          data.frame(Intercept = coef(mod)[1],
-                     Slope = coef(mod)[2],
-                     R2 = summary(mod)$adj.r.squared)
-        })
-    }
-    
-    # Create plot
-      scale = 0.5
-    
-      R2Color = "#69b3a2"
-      slopeColor = rgb(0.2, 0.6, 0.9, 1)
-      
-      p <-   ggplot(df.model.summary, aes(x = year, y = R2)) +
-        geom_point(aes(color = "R2"), size = 3) +
-        geom_line(aes(color = "R2"))+
-        geom_point(aes(y = Slope/scale, color = "Slope"),size = 3) +
-        geom_line(aes(y = Slope/scale, color = "Slope")) +
-        scale_x_continuous(breaks = seq(df.model.summary$year[1], df.model.summary$year[length(df.model.summary$year)], 1)) +
-        scale_y_continuous(
-          name = "R2",  # Label for the primary y-axis
-          sec.axis = sec_axis(~ . * scale, name = "Slope")  # Adjust the range and label for the secondary y-axis
-        ) +
-        labs(x = "Year", color = "") +
-        scale_color_manual(values = c(R2Color, slopeColor))+ 
-        theme(
-          axis.title.y = element_text(color = R2Color, size=14),
-          axis.title.y.right = element_text(color = slopeColor, size=14),
-          axis.title.x = element_text(size = 14),
-          axis.text.x = element_text(size = 14),
-          axis.text.y = element_text(size = 14),
-          axis.text.y.right = element_text(size = 14),
-          legend.position = "bottom",
-          legend.direction = "horizontal")
-      
-      return(p)
+R2_slope_QCQA <- function(data, var1, var2, lang = "en", fit = NULL) {
+  if (is.null(fit) && !is.null(data)) fit <- scatter_fit(data, var1, var2)
+  if (is.null(fit) || is.null(fit$per_year) || !nrow(fit$per_year)) {
+    return(cq_empty_plot(tr("msg_few_points", lang)))
   }
+  py <- fit$per_year
+  yrs <- as.character(py$year)
+  fac <- cq_facets(2, 2, titles = c(tr("fit_r2", lang), tr("fit_slope", lang)),
+                   xaxis = list(type = "category"), share_x = FALSE, share_y = FALSE,
+                   hgap = 0.12, top_pad = 0.1)
+  fig <- cq_plot()
+  for (k in 1:2) {
+    val <- if (k == 1) py$r2 else py$slope
+    lab <- if (k == 1) "R\u00b2" else tr("fit_slope", lang)
+    fig <- add_tr(fig, type = "scatter", mode = "lines+markers", x = yrs, y = signif(val, 4),
+                           xaxis = paste0("x", fac$ids[k]), yaxis = paste0("y", fac$ids[k]),
+                           showlegend = FALSE,
+                           line = list(color = cq_brand$axis, width = 1.5),
+                           marker = list(color = cq_colors(length(yrs)), size = 11,
+                                         line = list(color = "#FFFFFF", width = 2)),
+                           hovertemplate = paste0("%{x}<br>", lab, " %{y:.3f}<extra></extra>"))
+  }
+  fig$layout <- cq_facet_layout(fac, margin = list(l = 10, r = 10, t = 10, b = 10))
+  cq_widget(fig, filename = "fit_per_year")
+}

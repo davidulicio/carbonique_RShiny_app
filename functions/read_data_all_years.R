@@ -1,3 +1,5 @@
+# NOTE (2026): not used by the app any more (see functions/data_cache.R);
+# kept for scripts that read the database.
 # Script to read data available in the database
 # By Sara Knox
 # Created June, 2024

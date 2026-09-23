@@ -1,44 +1,41 @@
-# Script to matche user-input variables to their AmeriFlux Variable and Units ounterparts
-# By Sara Knox
-# Created June, 2024
+# Script to match variables to their AmeriFlux variable, units and description
+# By Sara Knox, Created June, 2024; vectorised 2026 (same matching rules)
 
 var_units <- function(Variables, UnitCSVFilePath) {
   # -------------------------------------------------------------------------- #
   # ARGUMENTS:
-  # - Variables [list]: list of variable names 
-  # - UnitCSVFilePath [str]: A string that contains the path to an AmeriFlux
-  #   CSV
-  # PURPOSE:
-  # - matches user-inputted variables to their AmeriFlux Variable and Units 
-  #   counterparts.
+  # - Variables [chr]: variable names (e.g. "TA_1_1_1")
+  # - UnitCSVFilePath [str]: path to the AmeriFlux variable CSV
   # OUTPUT:
-  # - returns a dataframe containing the AmeriFlux Varaibles and Units data 
-  #   adhering to the user-inputted csv's.
+  # - data.frame with columns name, variable (AmeriFlux base name), units,
+  #   description
   # -------------------------------------------------------------------------- #
-  shortnames <- sapply(strsplit(Variables, split = "(_[0-9])"), '[',1)
-  shortnames <- sapply(strsplit(shortnames, split = "_PI"),'[',1)
-  
-  units <- data.frame(name = Variables,
-                      variable = shortnames)
-  
-  flux_var <- readr::read_csv(UnitCSVFilePath,show_col_types = FALSE)
-  flux_var <- flux_var[, c('Variable',
-                           'Units',
-                           'Type')]
-  
-  for (i in 1:length(units$variable)) {
-    units$variable[i] <- stringr::str_to_upper(units$variable[i])
+  if (is.null(.cq_cache$flux_var)) {
+    .cq_cache$flux_var <- utils::read.csv(UnitCSVFilePath, stringsAsFactors = FALSE,
+                                          encoding = "UTF-8", check.names = FALSE)
   }
-  
-  data_units <- vector(mode='character',length=length(units$variable))
-  for (i in 1:length(units$variable)) {
-    
-    if (length(which(flux_var$Variable %in% units$variable[i])) > 0) {
-      ind <- which(flux_var$Variable %in% units$variable[i])
-      data_units[i] <- flux_var$Units[ind]
-    }
-  }
-  
-  units$units <- data_units
-  return(units)
+  flux_var <- .cq_cache$flux_var
+
+  # Text before the first "_<digit>" and before "_PI", upper case
+  shortnames <- sub("_[0-9].*$", "", Variables)
+  shortnames <- toupper(sub("_PI.*$", "", shortnames))
+
+  i <- match(shortnames, flux_var$Variable)
+  out <- data.frame(name = Variables,
+                    variable = shortnames,
+                    units = ifelse(is.na(i), "", flux_var$Units[i]),
+                    description = ifelse(is.na(i), "", flux_var$Description[i]),
+                    stringsAsFactors = FALSE)
+  # Columns created by the app (create_EBC_columns)
+  ae <- grepl("^AE_", Variables); hle <- Variables == "H_LE"
+  out$units[ae | hle] <- "W m-2"
+  out$description[ae] <- "Available energy (NETRAD - G)"
+  out$description[hle] <- "Turbulent fluxes (H + LE)"
+  out
+}
+
+# Axis label "NAME (units)" for a variable, using a var_units() table
+unit_label <- function(name, units_tbl) {
+  u <- units_tbl$units[match(name, units_tbl$name)]
+  if (length(u) == 0 || is.na(u) || !nzchar(u)) name else paste0(name, " (", u, ")")
 }

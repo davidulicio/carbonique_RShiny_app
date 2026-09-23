@@ -1,3 +1,4 @@
+# NOTE (2026): not used by the app any more (see functions/data_cache.R).
 # Script to identify years available in the database
 # By Sara Knox
 # Created June, 2024

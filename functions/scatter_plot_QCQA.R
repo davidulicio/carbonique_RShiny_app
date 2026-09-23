@@ -1,161 +1,120 @@
 # Figure for data QCQA scatter plot
 # By Sara Knox
 # Created March 15, 2022
+# 2026: native plotly (WebGL), fit computed once and shared with R2_slope_QCQA.
+#   Changes to note:
+#   * The fit is Y on X (lm(y ~ x)), i.e. the line that is drawn. The old plot
+#     title reported the slope of X on Y, which did not match the drawn line.
+#   * Axes are no longer forced to start at 0, so negative values (night-time
+#     H, LE, NETRAD...) are no longer dropped from the plot and the fit.
+#   * The year interaction uses year as a factor (one line per year).
+#   * "vis_potential_outliers" now highlights points with Cook's D > 4/n.
 
 # Input
-# data = dataframe with relevant variables
-# x = x variable name
-# y = y variable name
-# year = "year"
-# xlab = x label
-# ylab = y label
-#vis_potential_outliers = 1 for yes, and 0 for no
-scatter_plot_QCQA <-
-  function(data,
-           var1,
-           var2,
-           xlab,
-           ylab,
-           vis_potential_outliers) {
-    # Create new dataframe with only var1, var2, and year
-    
-    # Create year column if doesn't exist
-    if ("year" %in% colnames(data)) {
-      df <- (data[, (colnames(data) %in% c(var1, var2, "year"))])
-    } else {
-      data$year <- as.numeric(format(data$datetime, "%Y"))
-      df <- (data[, (colnames(data) %in% c(var1, var2, "year"))])
-    }
-    
-    col_order <- c(var1, var2, "year")
-    df <- df[, col_order]
-    
-    df <- na.omit(df)
-    colnames(df) <- c("x", "y", "year")
-    
-    # Create linear models
-    nyears <- unique(df$year)
-    
-    if (length(nyears) == 1) {
-      lm.simple <- lm(x ~ y , data = df) #Fit linear model
-      best_model <- lm.simple
-      
-      # Get R2 and slope for linear model
-      sumtbl <- summary(lm.simple)
-      slope <- sumtbl$coefficients[2]
-      r2 <- sumtbl$adj.r.squared
-      
-      p <- ggplot(df) +
-        geom_point(aes(x, y)) +
-        geom_smooth(aes(x, y), method = lm, color = 'black') +
-        scale_x_continuous(limits = c(0, max(df$x))) +  # Set x-axis limits
-        scale_y_continuous(limits = c(0, max(df$y))) +  # Set y-axis limits
-        labs(x = xlab) +
-        labs(y = ylab) +
-        theme(plot.title = element_text(color = "grey44")) +
-        theme(plot.title = element_text(size = 8)) +
-        ggtitle(paste(
-          "Slope = ",
-          as.character(round(slope, 2)),
-          ", R2 = ",
-          as.character(round(r2, 2))
-        ))
-      
-    } else {
-      lm.simple <- lm(x ~ y, data = df) #Fit linear model with all data
-      lm.interaction <-
-        lm(x ~ y * year, data = df) #Fit linear model with year as interaction
-      
-      # Find best linear model based on AIC
-      aic_values <- AIC(lm.simple, lm.interaction)
-      select_best_model <- which.min(aic_values$AIC)
-      
-      if (select_best_model == 1) {
-        best_model <- lm.simple
-      } #else if (select_best_model == 2) {
-        #best_model <- lm.withyear
-      #} 
-      else {
-        best_model <- lm.interaction
-      }
-      
-      # Get R2 for linear model
-      sumtbl <- summary(best_model)
-      r2 <- sumtbl$adj.r.squared
-      
-      if (select_best_model == 2) { # Update number if using more models
-        df.model.summary <- df %>%
-          group_by(year) %>%
-          do({
-            mod = lm(x ~ y, data = .)
-            data.frame(Intercept = coef(mod)[1],
-                       Slope = coef(mod)[2])
-          })
-      } else {
-        slope <- sumtbl$coefficients[2]
-      }
-      
-      p <- ggplot(df) +
-        geom_point(aes(x, y, color = as.factor(year)), alpha = 0.6) +
-        scale_x_continuous(limits = c(0, max(df$x))) +  # Set x-axis limits
-        scale_y_continuous(limits = c(0, max(df$y)))    # Set y-axis limits
-      
-      if (select_best_model == 2) {
-        df.model.summary$year <- as.numeric(df.model.summary$year)
-        
-        # Round last two columns
-        df.model.summary[, (ncol(df.model.summary)-1):ncol(df.model.summary)] <-
-          signif(df.model.summary[, (ncol(df.model.summary)-1):ncol(df.model.summary)], 1)
-        
-        # Create table graphic
-        tbl <- tableGrob(df.model.summary)
-        
-        p <-
-          p + geom_smooth(aes(x, y, color = as.factor(year)), method = lm) +
-          ggtitle(paste(
-            "R2 = ",
-            as.character(round(r2, 2)),
-            ", year is a significant interaction term")) + 
-          annotation_custom(tbl, xmin = floor(max(df$x)), xmax = floor(max(df$x)), ymin = ceiling(max(df$y)), ymax = ceiling(max(df$y)))
-        
-      } else {
-        p <- p + geom_smooth(aes(x, y), method = lm, color = 'black') +
-          ggtitle(paste(
-            "Slope = ",
-            as.character(round(slope, 2)),
-            ", R2 = ",
-            as.character(round(r2, 2))
-          ))
-      }
-      p <- p + theme(plot.title = element_text(color = "grey44")) +
-        theme(plot.title = element_text(size = 8)) +
-        labs(x = xlab) +
-        labs(y = ylab) +
-        labs(color = "Year")
-    }
-    
-    # Identify outliers based
-    
-    #identify potential outliers - REFINE THIS FURTHER
-    
-    if (vis_potential_outliers == 1) {
-      
-      model <- lm(x ~ y, data = df)
-      
-      # Calculate Cook's Distance
-      df$cooksd <- cooks.distance(model)
-      
-      # Flag influential points (e.g., Cook's Distance > 4/n)
-      df$influential <- df$cooksd > (4 / nrow(df))
-      
-      # Plot with Cook's Distance and influential points
-      p2 <- ggplot(df, aes(x = x, y = y)) +
-        geom_point(aes(color = influential)) +
-        scale_color_manual(values = c("black", "red")) +
-        ggtitle("Scatter Plot with Influential Outliers (Cook's Distance)") +
-        theme_minimal()
+# data = dataframe with relevant variables and a "year" column (or "datetime")
+# var1 = x variable name, var2 = y variable name
 
-      p2
+scatter_fit <- function(data, var1, var2) {
+  if (!("year" %in% names(data))) data$year <- as.integer(format(data$datetime, "%Y"))
+  df <- data.frame(x = data[[var1]], y = data[[var2]], year = data$year)
+  df <- df[stats::complete.cases(df), , drop = FALSE]
+  if (nrow(df) < 3 || stats::sd(df$x) == 0) return(NULL)
+
+  simple <- stats::lm(y ~ x, data = df)
+  s <- summary(simple)
+
+  per_year <- do.call(rbind, lapply(sort(unique(df$year)), function(yy) {
+    d <- df[df$year == yy, , drop = FALSE]
+    if (nrow(d) < 3 || stats::sd(d$x) == 0) return(NULL)
+    m <- stats::lm(y ~ x, data = d)
+    data.frame(year = yy, n = nrow(d), intercept = unname(stats::coef(m)[1]),
+               slope = unname(stats::coef(m)[2]), r2 = summary(m)$adj.r.squared)
+  }))
+
+  # Best model (AIC): one line for all years, or one line per year
+  by_year <- FALSE; r2 <- s$adj.r.squared
+  if (!is.null(per_year) && nrow(per_year) > 1) {
+    di <- df[df$year %in% per_year$year, , drop = FALSE]
+    inter <- stats::lm(y ~ x * factor(year), data = di)
+    simple_i <- stats::lm(y ~ x, data = di)
+    if (stats::AIC(inter) < stats::AIC(simple_i)) {
+      by_year <- TRUE
+      r2 <- summary(inter)$adj.r.squared
     }
-    return(toWebGL(ggplotly(p)))
   }
+
+  list(df = df, n = nrow(df), model = simple,
+       slope = unname(stats::coef(simple)[2]), intercept = unname(stats::coef(simple)[1]),
+       r2 = r2, by_year = by_year, per_year = per_year, var1 = var1, var2 = var2)
+}
+
+scatter_fit_text <- function(fit, lang = "en") {
+  if (is.null(fit)) return(tr("msg_few_points", lang))
+  if (fit$by_year) {
+    tr("fit_by_year", lang, r2 = fmt_num(fit$r2, 3, lang), n = fmt_int(fit$n, lang))
+  } else {
+    tr("fit_simple", lang, slope = fmt_num(fit$slope, 3, lang),
+       intercept = fmt_num(fit$intercept, 3, lang),
+       r2 = fmt_num(fit$r2, 3, lang), n = fmt_int(fit$n, lang))
+  }
+}
+
+scatter_plot_QCQA <- function(data, var1, var2, xlab, ylab, vis_potential_outliers = 0,
+                              one_to_one = FALSE, lang = "en", fit = NULL) {
+  if (is.null(fit) && !is.null(data)) fit <- scatter_fit(data, var1, var2)
+  if (is.null(fit)) return(cq_empty_plot(tr("msg_few_points", lang)))
+  df <- fit$df
+  years <- sort(unique(df$year))
+  pal <- stats::setNames(cq_colors(length(years)), years)
+
+  fig <- cq_plot()
+  for (yy in years) {
+    d <- df[df$year == yy, , drop = FALSE]
+    fig <- add_tr(fig, type = "scattergl", mode = "markers",
+                           x = cq_round(d$x), y = cq_round(d$y), name = as.character(yy),
+                           legendgroup = as.character(yy),
+                           marker = list(color = pal[[as.character(yy)]], size = 4, opacity = 0.45),
+                           hovertemplate = paste0(var1, " %{x:.4g}<br>", var2, " %{y:.4g}<extra>", yy, "</extra>"))
+  }
+
+  if (isTRUE(as.logical(vis_potential_outliers))) {
+    cd <- stats::cooks.distance(fit$model)
+    flag <- which(cd > 4 / nrow(df))
+    if (length(flag)) {
+      fig <- add_tr(fig, type = "scattergl", mode = "markers",
+                             x = cq_round(df$x[flag]), y = cq_round(df$y[flag]),
+                             name = tr("leg_outliers", lang),
+                             marker = list(color = "rgba(0,0,0,0)", size = 8,
+                                           line = list(color = cq_semantic$outlier, width = 1.4)),
+                             hovertemplate = paste0(var1, " %{x:.4g}<br>", var2, " %{y:.4g}<extra>Cook's D</extra>"))
+    }
+  }
+
+  xr <- range(df$x)
+  xs <- signif(seq(xr[1], xr[2], length.out = 50), 6)
+  if (one_to_one) {
+    lim <- range(c(df$x, df$y))
+    fig <- add_tr(fig, type = "scatter", mode = "lines", x = lim, y = lim,
+                           name = tr("leg_11", lang), hoverinfo = "skip",
+                           line = list(color = cq_brand$muted, width = 1.2, dash = "dot"))
+  }
+  if (fit$by_year) {
+    for (i in seq_len(nrow(fit$per_year))) {
+      r <- fit$per_year[i, ]
+      xr_y <- range(df$x[df$year == r$year])
+      xs_y <- signif(seq(xr_y[1], xr_y[2], length.out = 50), 6)
+      fig <- add_tr(fig, type = "scatter", mode = "lines", x = xs_y, y = signif(r$intercept + r$slope * xs_y, 6),
+                             name = as.character(r$year), legendgroup = as.character(r$year), showlegend = FALSE,
+                             line = list(color = pal[[as.character(r$year)]], width = 2.5),
+                             hovertemplate = paste0(r$year, ": ", tr("fit_slope", lang), " ", fmt_num(r$slope, 3, lang),
+                                                    ", R\u00b2 ", fmt_num(r$r2, 3, lang), "<extra></extra>"))
+    }
+  } else {
+    fig <- add_tr(fig, type = "scatter", mode = "lines", x = xs, y = signif(fit$intercept + fit$slope * xs, 6),
+                           name = tr("leg_fit", lang),
+                           line = list(color = cq_semantic$fit, width = 2.5),
+                           hovertemplate = paste0(tr("fit_slope", lang), " ", fmt_num(fit$slope, 3, lang),
+                                                  ", R\u00b2 ", fmt_num(fit$r2, 3, lang), "<extra></extra>"))
+  }
+  cq_layout(fig, xlab = xlab, ylab = ylab, filename = paste(var1, "vs", var2, sep = "_"))
+}
