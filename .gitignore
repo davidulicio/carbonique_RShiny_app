@@ -50,3 +50,7 @@ po/*~
 rsconnect/
 .DS_Store
 .DS_Store
+
+# Written by the pre-2026 version of the app; no longer used
+data/all_data.RData
+data/updated.txt

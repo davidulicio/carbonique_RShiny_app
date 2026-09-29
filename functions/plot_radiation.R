@@ -13,12 +13,11 @@ find_max_ccf <- function(a, b) {
 
 # Prepare the composite for one site, one radiation variable and one year
 radiation_composite <- function(obj, rad_name, year) {
-  dt <- obj$data
-  yr <- as.integer(format(dt$datetime, "%Y"))
+  yr <- as.integer(format(obj$datetime, "%Y"))
   rows <- which(yr == as.integer(year))
   co <- site_coordinates(obj$site)
   if (is.null(co) || !length(rows)) return(NULL)
-  df <- data.frame(datetime = dt$datetime[rows], rad = dt[[rad_name]][rows])
+  df <- data.frame(datetime = obj$datetime[rows], rad = obj_col(obj, rad_name)[rows])
   names(df)[2] <- rad_name
   df$pot_rad <- potential_rad_generalized(co$standard_meridian, co$lon, co$lat, df$datetime)
   comp <- diurnal_composite_rad_single_var(df, "pot_rad", rad_name, 15, 48)

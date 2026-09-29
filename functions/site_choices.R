@@ -19,7 +19,6 @@ site_choices <- function(obj, current = list()) {
   rad <- intersect(var_rad, vars)
   ae <- grep("^AE_", vars, value = TRUE)
   hle <- grep("H_LE", vars, value = TRUE)
-  cum <- grep("^(NEE|FCH4).*_uStar_f$", vars, value = TRUE)
   years <- as.character(obj$years)
   list(
     ts_var  = list(choices = ts_choices, selected = pick(groups, current$ts_var, c("TA", "FC", "LE"))),
@@ -29,7 +28,6 @@ site_choices <- function(obj, current = list()) {
     rad_var = list(choices = rad, selected = pick(rad, current$rad_var, var_rad)),
     rad_year = list(choices = years, selected = pick(years, current$rad_year, rev(years))),
     ebc_x   = list(choices = ae, selected = pick(ae, current$ebc_x, ae)),
-    ebc_y   = list(choices = hle, selected = pick(hle, current$ebc_y, "H_LE")),
-    cum_var = list(choices = cum, selected = pick(cum, current$cum_var, cum))
+    ebc_y   = list(choices = hle, selected = pick(hle, current$ebc_y, "H_LE"))
   )
 }

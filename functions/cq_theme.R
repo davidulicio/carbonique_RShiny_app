@@ -91,8 +91,9 @@ cq_base_layout <- function(showlegend = TRUE) {
 }
 
 # Turn a figure into a plotly htmlwidget (what renderPlotly() expects)
-cq_widget <- function(fig, filename = "carbonique_plot", modebar = TRUE) {
+cq_widget <- function(fig, filename = "carbonique_plot", modebar = TRUE, source = NULL) {
   w <- .cq_base_widget()
+  if (!is.null(source)) w$x$source <- source   # lets the server hear zoom events
   w$x$data <- fig$data
   w$x$layout <- fig$layout
   w$x$config <- list(
@@ -108,12 +109,12 @@ cq_widget <- function(fig, filename = "carbonique_plot", modebar = TRUE) {
 
 # One x/y panel with the shared look
 cq_layout <- function(fig, xlab = NULL, ylab = NULL, xaxis = list(), yaxis = list(),
-                      showlegend = TRUE, filename = "carbonique_plot", ...) {
+                      showlegend = TRUE, filename = "carbonique_plot", source = NULL, ...) {
   lay <- cq_base_layout(showlegend)
   lay$xaxis <- do.call(cq_axis, c(list(title = xlab), xaxis))
   lay$yaxis <- do.call(cq_axis, c(list(title = ylab), yaxis))
   fig$layout <- utils::modifyList(lay, utils::modifyList(fig$layout, list(...)))
-  cq_widget(fig, filename)
+  cq_widget(fig, filename, source = source)
 }
 
 # A friendly empty state drawn as a plot (keeps the card layout stable)
@@ -178,3 +179,18 @@ cq_facet_layout <- function(fac, ytitle = NULL, showlegend = FALSE,
 # Round values before sending them to the browser: float32 sensor data only
 # carries ~7 significant digits, and 5 keeps the JSON far smaller.
 cq_round <- function(x, digits = 5) signif(x, digits)
+
+# Replace the x/y data of every trace of a plot already on screen (after a
+# zoom), without redrawing the widget. `trs` is a list of list(x =, y =).
+restyle_xy <- function(session, id, trs, yrange = NULL) {
+  if (!length(trs)) return(invisible())
+  proxy <- plotly::plotlyProxy(id, session)
+  plotly::plotlyProxyInvoke(
+    proxy, "restyle",
+    list(x = lapply(trs, function(t) I(t$x)), y = lapply(trs, function(t) I(t$y))),
+    as.list(seq_along(trs) - 1L))
+  if (!is.null(yrange)) {
+    pad <- diff(yrange) * 0.06; if (pad == 0) pad <- 1
+    plotly::plotlyProxyInvoke(proxy, "relayout", list("yaxis.range" = c(yrange[1] - pad, yrange[2] + pad)))
+  }
+}

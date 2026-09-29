@@ -1,7 +1,7 @@
 # Figure for data QCQA scatter plot
 # By Sara Knox
 # Created March 15, 2022
-# 2026: native plotly (WebGL), fit computed once and shared with R2_slope_QCQA.
+# 2026: plotly (SVG, thinned points), fit computed once and shared with R2_slope_QCQA.
 #   Changes to note:
 #   * The fit is Y on X (lm(y ~ x)), i.e. the line that is drawn. The old plot
 #     title reported the slope of X on Y, which did not match the drawn line.
@@ -67,26 +67,31 @@ scatter_plot_QCQA <- function(data, var1, var2, xlab, ylab, vis_potential_outlie
   years <- sort(unique(df$year))
   pal <- stats::setNames(cq_colors(length(years)), years)
 
+  # Points: one per small cell of the plot for each year (outliers stay
+  # visible); the fit above uses every point
+  keep <- thin_xy(df$x, df$y, group = df$year)
+  dk <- df[keep, , drop = FALSE]
   fig <- cq_plot()
   for (yy in years) {
-    d <- df[df$year == yy, , drop = FALSE]
-    fig <- add_tr(fig, type = "scattergl", mode = "markers",
-                           x = cq_round(d$x), y = cq_round(d$y), name = as.character(yy),
-                           legendgroup = as.character(yy),
-                           marker = list(color = pal[[as.character(yy)]], size = 4, opacity = 0.45),
-                           hovertemplate = paste0(var1, " %{x:.4g}<br>", var2, " %{y:.4g}<extra>", yy, "</extra>"))
+    d <- dk[dk$year == yy, , drop = FALSE]
+    fig <- add_tr(fig, type = "scatter", mode = "markers",
+                  x = cq_round(d$x), y = cq_round(d$y), name = as.character(yy),
+                  legendgroup = as.character(yy),
+                  marker = list(color = pal[[as.character(yy)]], size = 4, opacity = 0.5),
+                  hovertemplate = paste0(var1, " %{x:.4g}<br>", var2, " %{y:.4g}<extra>", yy, "</extra>"))
   }
 
   if (isTRUE(as.logical(vis_potential_outliers))) {
     cd <- stats::cooks.distance(fit$model)
     flag <- which(cd > 4 / nrow(df))
     if (length(flag)) {
-      fig <- add_tr(fig, type = "scattergl", mode = "markers",
-                             x = cq_round(df$x[flag]), y = cq_round(df$y[flag]),
-                             name = tr("leg_outliers", lang),
-                             marker = list(color = "rgba(0,0,0,0)", size = 8,
-                                           line = list(color = cq_semantic$outlier, width = 1.4)),
-                             hovertemplate = paste0(var1, " %{x:.4g}<br>", var2, " %{y:.4g}<extra>Cook's D</extra>"))
+      fl <- flag[thin_xy(df$x[flag], df$y[flag])]
+      fig <- add_tr(fig, type = "scatter", mode = "markers",
+                    x = cq_round(df$x[fl]), y = cq_round(df$y[fl]),
+                    name = tr("leg_outliers", lang),
+                    marker = list(color = "rgba(0,0,0,0)", size = 8,
+                                  line = list(color = cq_semantic$outlier, width = 1.4)),
+                    hovertemplate = paste0(var1, " %{x:.4g}<br>", var2, " %{y:.4g}<extra>Cook's D</extra>"))
     }
   }
 

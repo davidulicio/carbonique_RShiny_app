@@ -74,6 +74,37 @@
 
     // Text inside UI that the server re-renders (and plots) keeps the language
     $(document).on("shiny:value", function () { setTimeout(function () { apply(window.CQ_LANG); }, 0); });
+
+    // Zoom: long time series are simplified for display, so after a zoom or
+    // pan the server sends the half-hourly values of the new range.
+    var ZOOMABLE = ["ts_plot", "all_plot"];
+    var handlers = {};
+    function zoomHandler(id) {
+      return function (ev) {
+        var keys = Object.keys(ev || {}), val = null, i, k;
+        for (i = 0; i < keys.length; i++) {
+          k = keys[i];
+          if (/^xaxis\d*\.autorange$/.test(k)) { val = { reset: true }; break; }
+          if (/^xaxis\d*\.range\[0\]$/.test(k)) { val = { from: ev[k], to: ev[k.replace("[0]", "[1]")] }; break; }
+          if (/^xaxis\d*\.range$/.test(k) && ev[k] && ev[k].length === 2) { val = { from: ev[k][0], to: ev[k][1] }; break; }
+        }
+        if (val) window.Shiny.setInputValue(id + "_xrange", val, { priority: "event" });
+      };
+    }
+    function bindZoom(id) {
+      var gd = document.getElementById(id);
+      if (!gd || typeof gd.on !== "function") return false;
+      handlers[id] = handlers[id] || zoomHandler(id);
+      if (gd.removeListener) gd.removeListener("plotly_relayout", handlers[id]);
+      gd.on("plotly_relayout", handlers[id]);
+      return true;
+    }
+    $(document).on("shiny:value", function (e) {
+      if (ZOOMABLE.indexOf(e.name) < 0) return;
+      // the plot is drawn just after the value arrives: (re)attach a few times,
+      // attaching is idempotent
+      [0, 150, 600, 2000].forEach(function (ms) { setTimeout(function () { bindZoom(e.name); }, ms); });
+    });
     // Plotly redraws with the right size when a tab becomes visible
     $(document).on("shown.bs.tab", function () { window.dispatchEvent(new Event("resize")); });
   }

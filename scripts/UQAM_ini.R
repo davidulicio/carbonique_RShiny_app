@@ -40,9 +40,21 @@ var_of_interest <- c("datetime",
                      "USTAR",                               # Turbulence (proxy for 'good' EC conditions)
                      "LE", "H", "NETRAD", "G")              # Surface energy balance
 
-# How often (minutes) the app re-scans the database folders for new sites/years.
-# Changed data files are picked up automatically on the next request.
+# How often (minutes) the app re-scans the database folders for new sites/years
 refresh_minutes <- 10
+
+# How often (seconds) the app checks whether a site's files were updated
+# (it looks at the time vector files only, so this is cheap)
+recheck_seconds <- 60
+
+# Cumulative fluxes use gap-filled data, read from this level whatever `level` is
+cumulative_level <- "Clean/ThirdStage"
+cumulative_pattern <- "^(NEE|FCH4).*_uStar_f$"
 
 # Maximum number of sites kept in memory at once
 max_cached_sites <- 8
+
+# Points drawn per series before long periods are simplified for display
+# (the highest and lowest value of each time step are kept; zooming in shows
+# every half-hour again)
+max_points_per_series <- 3000

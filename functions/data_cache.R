@@ -1,34 +1,46 @@
 # Fast, cached access to the binary database
-# David Trejo Cancino, 2026 (performance rewrite)
+# David Trejo Cancino, 2026
 #
-# Replaces the old daily "load every site" step (scripts/load_save_data.R and
-# data/all_data.RData). Each site is now read on demand, which takes well under
-# a second, and kept in memory until its files change on disk. Nothing is written
-# to the app folder, so the app no longer needs write access there.
+# Each variable is read from disk only when a plot needs it, then kept in
+# memory until the site's files change. Opening a site therefore touches a
+# handful of files (time vectors, a few variables) instead of every file in
+# the level folder, which matters most on network drives (e.g. W:), where each
+# file costs tens of milliseconds whatever its size.
+#
+# Nothing is written to the app folder.
 
 .cq_cache <- new.env(parent = emptyenv())
+.cq_cache$sites <- list()
 
 # Files in a level folder that are not data series (same rules as before)
 skip_file_regex <- paste(c("\\.txt$", "\\.csv$", "\\.ya?ml$", "\\.mat$", "\\.json$",
                            "clean_tv", "Clean_tv", "DateTime", "TimeVector",
                            "Clean", "clean", "Manual", "NARR", "badWD"), collapse = "|")
 
+# Every file operation goes through .io(), which counts it. For testing, an
+# artificial delay per operation can be set to mimic a slow network drive:
+#   Sys.setenv(CARBONIQUE_IO_DELAY = "0.03")
+.io <- function(n = 1) {
+  .cq_cache$io_ops <- (.cq_cache$io_ops %||% 0) + n
+  d <- suppressWarnings(as.numeric(Sys.getenv("CARBONIQUE_IO_DELAY", "0")))
+  if (!is.na(d) && d > 0) Sys.sleep(d * n)
+}
+io_ops <- function() .cq_cache$io_ops %||% 0
+
 # 1. Which sites and years exist --------------------------------------------
-# Two-level listing (<year>/<site>) instead of a recursive walk of the whole
-# database, which is much faster on large or network drives.
 discover_sites <- function(main_dir, level, site_pattern) {
   empty <- data.frame(site = character(), year = character(), stringsAsFactors = FALSE)
-  if (!dir.exists(main_dir)) return(empty)
-  years <- list.dirs(main_dir, full.names = FALSE, recursive = FALSE)
+  .io(); if (!dir.exists(main_dir)) return(empty)
+  .io(); years <- list.dirs(main_dir, full.names = FALSE, recursive = FALSE)
   years <- sort(years[grepl("^(19|20)\\d{2}$", years)])
   rows <- lapply(years, function(y) {
-    s <- list.dirs(file.path(main_dir, y), full.names = FALSE, recursive = FALSE)
+    .io(); s <- list.dirs(file.path(main_dir, y), full.names = FALSE, recursive = FALSE)
     s <- s[grepl(site_pattern, s)]
     if (!length(s)) return(NULL)
     data.frame(site = s, year = y, stringsAsFactors = FALSE)
   })
   db <- do.call(rbind, c(list(empty), rows))
-  # keep only site-years that actually contain the first level
+  .io(nrow(db))
   db[dir.exists(file.path(main_dir, db$year, db$site, level[1])), , drop = FALSE]
 }
 
@@ -49,142 +61,192 @@ available_sites <- function() {
 
 site_years <- function(site) sort(database_index()$year[database_index()$site == site])
 
-# Cheap fingerprint of a site's files: count, total size and newest change time.
-# When the cleaning pipeline rewrites a file, the fingerprint changes and the
-# site is re-read on the next request.
-site_signature <- function(site) {
-  yrs <- site_years(site)
-  if (!length(yrs)) return(NA_character_)
-  paths <- as.vector(outer(file.path(main_dir, yrs, site), level, file.path))
-  f <- list.files(paths[dir.exists(paths)], full.names = TRUE)
-  if (!length(f)) return("empty")
-  info <- file.info(f, extra_cols = FALSE)
-  paste(length(f), sum(info$size, na.rm = TRUE),
-        format(as.numeric(max(info$mtime, na.rm = TRUE)), nsmall = 0), sep = ":")
+# 2. Catalog of one site: time vector and variable files, per year ----------
+# Cost: one listing per year and level, plus reading the time vectors.
+# The catalog is re-checked at most every `recheck_seconds`, by looking only at
+# the time vector files (the cleaning pipeline rewrites them on every run).
+list_level_files <- function(p) {
+  .io(); f <- list.files(p)
+  if (!length(f)) return(character(0))
+  .io(); d <- list.dirs(p, full.names = FALSE, recursive = FALSE)
+  f <- setdiff(f, d)
+  f[!grepl(skip_file_regex, f)]
 }
 
-# 2. Reading one site-year ----------------------------------------------------
-# `select` is an optional function(file_names) -> logical, to read only some files.
-read_site_year <- function(site, year, select = NULL) {
-  base <- file.path(main_dir, year, site)
-  tv_path <- file.path(base, level[1], tv_input)
-  if (!file.exists(tv_path)) return(NULL)
-  tv <- readBin(tv_path, "double", n = file.size(tv_path) %/% 8)
-  n <- length(tv)
+tv_signature <- function(tv_paths) {
+  .io(length(tv_paths))
+  info <- file.info(tv_paths, extra_cols = FALSE)
+  paste(tv_paths, info$size, as.numeric(info$mtime), collapse = "|")
+}
+
+build_catalog <- function(site, levels = level, yrs = site_years(site)) {
+  years <- lapply(yrs, function(y) {
+    base <- file.path(main_dir, y, site)
+    tv_path <- file.path(base, levels[1], tv_input)
+    .io(); if (!file.exists(tv_path)) return(NULL)
+    .io(); tv <- readBin(tv_path, "double", n = file.size(tv_path) %/% 8)
+    files <- character(0)
+    for (lv in levels) {
+      p <- file.path(base, lv)
+      f <- setdiff(list_level_files(p), names(files))   # first level wins on duplicates
+      files[f] <- file.path(p, f)
+    }
+    list(year = y, tv_path = tv_path, n = length(tv), tv = tv, files = files)
+  })
+  years <- Filter(Negate(is.null), years)
+  if (!length(years)) return(NULL)
+  tv <- unlist(lapply(years, `[[`, "tv"))
   # Matlab datenum -> POSIXct (UTC), rounded to the nearest 30 minutes
   secs <- round((tv - 719529) * 86400 / 1800) * 1800
-  out <- list(datetime = as.POSIXct(secs, origin = "1970-01-01", tz = "UTC"))
-  for (lv in level) {
-    p <- file.path(base, lv)
-    if (!dir.exists(p)) next
-    files <- list.files(p)
-    files <- files[!grepl(skip_file_regex, files)]
-    files <- files[!dir.exists(file.path(p, files))]
-    files <- setdiff(files, names(out))        # first level wins on duplicates
-    if (!is.null(select)) files <- files[select(files)]
-    for (f in files) {
-      x <- readBin(file.path(p, f), "double", n = n, size = 4)
-      if (length(x) < n) x <- c(x, rep(NA_real_, n - length(x)))
-      out[[f]] <- x
-    }
-  }
-  data.table::setDT(out)
-  out
+  datetime <- as.POSIXct(secs, origin = "1970-01-01", tz = "UTC")
+  ord <- order(datetime)
+  if (!identical(ord, seq_along(ord))) datetime <- datetime[ord]
+  for (i in seq_along(years)) years[[i]]$tv <- NULL
+  raw <- unique(unlist(lapply(years, function(e) names(e$files))))
+  list(site = site, years = years, datetime = datetime, order = ord,
+       sorted = identical(ord, seq_along(ord)), raw_vars = raw,
+       signature = tv_signature(vapply(years, `[[`, "", "tv_path")),
+       checked = Sys.time(), values = new.env(parent = emptyenv()))
 }
 
-# 3. One site, all years (cached) -------------------------------------------
+site_catalog <- function(site) {
+  key <- paste0("cat:", site)
+  cat <- .cq_cache[[key]]
+  if (!is.null(cat) && difftime(Sys.time(), cat$checked, units = "secs") < recheck_seconds) return(cat)
+  if (!is.null(cat)) {
+    sig <- tv_signature(vapply(cat$years, `[[`, "", "tv_path"))
+    if (identical(sig, cat$signature)) {
+      cat$checked <- Sys.time(); .cq_cache[[key]] <- cat
+      return(cat)
+    }
+  }
+  cat <- build_catalog(site)
+  .cq_cache[[key]] <- cat
+  prune_site_cache()
+  cat
+}
+
+# 3. One variable, all years (cached) ----------------------------------------
+read_raw_var <- function(cat, var) {
+  x <- unlist(lapply(cat$years, function(e) {
+    p <- e$files[var]
+    if (is.na(p)) return(rep(NA_real_, e$n))
+    .io()
+    v <- tryCatch(readBin(p, "double", n = e$n, size = 4), error = function(err) numeric(0))
+    if (length(v) < e$n) v <- c(v, rep(NA_real_, e$n - length(v)))
+    v
+  }), use.names = FALSE)
+  if (!cat$sorted) x <- x[cat$order]
+  x
+}
+
+site_var <- function(cat, var) {
+  if (!is.null(cat$values[[var]])) return(cat$values[[var]])
+  d <- derived_vars(cat$raw_vars)
+  x <- if (var %in% names(d)) {
+    src <- d[[var]]
+    a <- site_var(cat, src[1])
+    if (length(src) > 1) {
+      b <- site_var(cat, src[2])
+      if (src[3] == "-") a - b else a + b
+    } else a
+  } else if (var %in% cat$raw_vars) {
+    read_raw_var(cat, var)
+  } else {
+    rep(NA_real_, length(cat$datetime))
+  }
+  assign(var, x, envir = cat$values)
+  x
+}
+
+# 4. The object the app works with ---------------------------------------------
+# obj$datetime, obj$vars, obj$units ... and obj_cols(obj, cols, rows) for values.
 get_site_data <- function(site) {
   if (is.null(site) || !nzchar(site)) return(NULL)
-  sig <- site_signature(site)
-  if (is.na(sig)) return(NULL)
-  key <- paste0("site:", site)
+  cat <- site_catalog(site)
+  if (is.null(cat)) return(NULL)
+  key <- paste0("obj:", site)
   hit <- .cq_cache[[key]]
-  if (!is.null(hit) && identical(hit$signature, sig)) {
-    hit$last_used <- Sys.time(); .cq_cache[[key]] <- hit
-    return(hit)
-  }
+  if (!is.null(hit) && identical(hit$signature, cat$signature)) return(hit)
 
-  parts <- lapply(site_years(site), function(y) read_site_year(site, y))
-  dt <- data.table::rbindlist(parts, use.names = TRUE, fill = TRUE)
-  if (!nrow(dt)) return(NULL)
-  data.table::setorderv(dt, "datetime")
-  dt <- create_EBC_columns(dt)
-
-  vars <- setdiff(names(dt), "datetime")
+  vars <- c(cat$raw_vars, names(derived_vars(cat$raw_vars)))
   vars <- vars[order(tolower(vars))]
-  data.table::setcolorder(dt, c("datetime", vars))
-
-  # first/last timestamp with any data (files are padded to full years)
-  has_data <- Reduce(`|`, lapply(vars, function(v) !is.na(dt[[v]])), FALSE)
-  valid <- which(has_data)
-  step <- diff(as.numeric(dt$datetime))
-
+  # First and last record: from key flux / met variables (reads 1-2 files per year)
+  keyv <- utils::head(intersect(c("FC", "LE", "H", "TA_1_1_1", "SW_IN_1_1_1"), vars), 2)
+  if (!length(keyv)) keyv <- vars[1]
+  has <- Reduce(`|`, lapply(keyv, function(v) !is.na(site_var(cat, v))), FALSE)
+  valid <- which(has)
+  step <- diff(as.numeric(cat$datetime))
   obj <- list(
-    site       = site,
-    data       = dt,
-    vars       = vars,
-    units      = var_units(vars, UnitCSVFilePath),
-    years      = sort(unique(as.integer(format(dt$datetime[valid], "%Y")))),
-    first      = if (length(valid)) dt$datetime[min(valid)] else NA,
-    last       = if (length(valid)) dt$datetime[max(valid)] else NA,
-    regular    = length(step) > 0 && all(step == 1800),
-    signature  = sig,
-    built      = Sys.time(),
-    last_used  = Sys.time()
+    site = site, cat = cat, datetime = cat$datetime, vars = vars,
+    units = var_units(vars, UnitCSVFilePath),
+    years = sort(unique(as.integer(format(cat$datetime[valid], "%Y")))),
+    first = if (length(valid)) cat$datetime[min(valid)] else cat$datetime[1],
+    last  = if (length(valid)) cat$datetime[max(valid)] else utils::tail(cat$datetime, 1),
+    regular = length(step) > 0 && all(step == 1800),
+    signature = cat$signature
   )
   .cq_cache[[key]] <- obj
-  prune_site_cache()
   obj
+}
+
+obj_col <- function(obj, var) site_var(obj$cat, var)
+
+obj_cols <- function(obj, cols, rows = NULL) {
+  d <- data.frame(datetime = if (is.null(rows)) obj$datetime else obj$datetime[rows])
+  for (cl in unique(cols)) {
+    v <- obj_col(obj, cl)
+    d[[cl]] <- if (is.null(rows)) v else v[rows]
+  }
+  d$year <- as.integer(format(d$datetime, "%Y"))
+  d
 }
 
 prune_site_cache <- function() {
-  keys <- grep("^site:", ls(.cq_cache), value = TRUE)
+  keys <- grep("^cat:", ls(.cq_cache), value = TRUE)
   if (length(keys) <= max_cached_sites) return(invisible())
-  used <- vapply(keys, function(k) as.numeric(.cq_cache[[k]]$last_used), 0)
-  rm(list = keys[order(used)][seq_len(length(keys) - max_cached_sites)], envir = .cq_cache)
+  used <- vapply(keys, function(k) as.numeric(.cq_cache[[k]]$checked), 0)
+  drop <- keys[order(used)][seq_len(length(keys) - max_cached_sites)]
+  rm(list = c(drop, sub("^cat:", "obj:", drop)), envir = .cq_cache)
 }
 
-# 4. All sites, a few variables (cached) -------------------------------------
-# Same selection rule as before: for each variable of interest, the first file
-# whose name without position qualifiers (e.g. TA_1_1_1 -> TA) matches.
-select_vars_of_interest <- function(files) {
-  short <- gsub("_[[:digit:]]", "", files)
-  keep <- logical(length(files))
-  for (v in var_of_interest[-1]) {
-    i <- which(short == v)[1]
-    if (!is.na(i)) keep[i] <- TRUE
-  }
-  keep
+# 5. All sites: one variable per site (cached through the site catalogs) ------
+# Same rule as before: the first file whose name without position qualifiers
+# (e.g. TA_1_1_1 -> TA) matches the requested variable.
+site_series_for <- function(site, var) {
+  cat <- site_catalog(site)
+  if (is.null(cat)) return(NULL)
+  if (var == "datetime") return(list(name = "datetime", values = as.numeric(cat$datetime)))
+  short <- gsub("_[[:digit:]]", "", cat$raw_vars)
+  hit <- cat$raw_vars[short == var][1]
+  if (is.na(hit)) return(NULL)
+  list(name = hit, values = site_var(cat, hit))
 }
 
-get_all_sites_data <- function() {
-  sites <- available_sites()
-  sig <- paste(sites, vapply(sites, site_signature, ""), collapse = "|")
-  hit <- .cq_cache$all_sites
-  if (!is.null(hit) && identical(hit$signature, sig)) return(hit)
+all_sites_signature <- function() {
+  s <- available_sites()
+  paste(s, vapply(s, function(x) { c <- site_catalog(x); if (is.null(c)) "" else c$signature }, ""),
+        collapse = "|")
+}
 
-  parts <- lapply(sites, function(s) {
-    yr <- lapply(site_years(s), function(y) read_site_year(s, y, select = select_vars_of_interest))
-    d <- data.table::rbindlist(yr, use.names = TRUE, fill = TRUE)
-    if (!nrow(d)) return(NULL)
-    data.table::setnames(d, gsub("_[[:digit:]]", "", names(d)))
-    d <- d[, unique(names(d)), with = FALSE]
-    for (v in setdiff(var_of_interest, names(d))) data.table::set(d, j = v, value = NA_real_)
-    d <- d[, var_of_interest, with = FALSE]
-    data.table::setorderv(d, "datetime")
-    d[, site := s]
+# Data for the All sites page: one row per site and time step, x and y only
+all_sites_xy <- function(xvar, yvar, sites) {
+  out <- lapply(sites, function(s) {
+    cat <- site_catalog(s)
+    ys <- site_series_for(s, yvar)
+    if (is.null(cat) || is.null(ys)) return(NULL)
+    d <- data.table::data.table(site = s, datetime = cat$datetime, y = ys$values)
+    if (xvar != "datetime") {
+      xs <- site_series_for(s, xvar)
+      if (is.null(xs)) return(NULL)
+      d[, x := xs$values]
+    }
     d
   })
-  data_all <- data.table::rbindlist(parts, use.names = TRUE, fill = TRUE)
-  obj <- list(data = data_all,
-              units = var_units(var_of_interest, UnitCSVFilePath),
-              sites = unique(data_all$site),
-              signature = sig)
-  .cq_cache$all_sites <- obj
-  obj
+  data.table::rbindlist(out)
 }
 
-# 5. Site coordinates ------------------------------------------------------
+# 6. Site coordinates ------------------------------------------------------
 site_coordinates <- function(site) {
   if (is.null(.cq_cache$coords)) {
     .cq_cache$coords <- tryCatch(
@@ -192,9 +254,32 @@ site_coordinates <- function(site) {
       error = function(e) data.frame(Site = character()))
   }
   co <- .cq_cache$coords
-  co <- co[co$Site == site, , drop = FALSE]
+  co <- co[toupper(trimws(co$Site)) == toupper(site), , drop = FALSE]
   if (!nrow(co)) return(NULL)
   co <- co[1, ]   # some sites have more than one row: use the first
   list(standard_meridian = as.numeric(co$Standard_Meridian),
        lat = as.numeric(co$Latitude), lon = as.numeric(co$Longitude))
+}
+
+# 7. Gap-filled (ThirdStage) data for the cumulative fluxes ------------------
+# Read from `cumulative_level` whatever level the rest of the app uses.
+thirdstage_catalog <- function(site) {
+  key <- paste0("cat3:", site)
+  cat <- .cq_cache[[key]]
+  if (!is.null(cat) && difftime(Sys.time(), cat$checked, units = "secs") < recheck_seconds) return(cat)
+  yrs <- site_years(site)
+  .io(length(yrs))
+  yrs <- yrs[dir.exists(file.path(main_dir, yrs, site, cumulative_level))]
+  cat <- if (length(yrs)) build_catalog(site, cumulative_level, yrs) else NULL
+  if (is.null(cat)) {
+    cat <- list(site = site, years = list(), raw_vars = character(0), checked = Sys.time())
+  }
+  .cq_cache[[key]] <- cat
+  cat
+}
+
+cumulative_vars <- function(site) {
+  cat <- thirdstage_catalog(site)
+  v <- grep(cumulative_pattern, cat$raw_vars, value = TRUE)
+  v[order(tolower(v))]
 }

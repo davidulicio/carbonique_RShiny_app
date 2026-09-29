@@ -42,22 +42,27 @@ This reads every site and renders every tab in English and French. It must end w
 
 ## 4. Switch
 
-When the beta looks right, replace the current app folder with this one (or point the
-current folder at this branch with `git checkout redesign-2026`). To roll back, put the
-previous folder back or `git checkout main`.
+When the beta looks right, replace the current app folder with this one (or, if the
+server folder is a git clone of the repository, run `git pull` once this version is merged
+into `main`). To roll back, put the previous folder back or `git checkout 6f1f0fa` (the
+last commit before this version).
 
 ## What changed for the server
 
-* **No daily rebuild.** The old app re-read every site on the first visit of each day and
-  saved `data/all_data.RData` and `data/updated.txt`. The new app reads each site on
-  demand (well under a second) and keeps it in memory until the files change. It writes
-  nothing to its folder, so it no longer needs write access there. The two old files and
-  `scripts/load_save_data.R` were removed.
-* **Faster plots.** Plots are built directly with plotly (WebGL) instead of converting
-  ggplot objects with `ggplotly()`, and values are rounded to 5 significant digits
-  before being sent. The time series of one variable went from about 20 MB to under
-  1.5 MB, and from about 4 s to 0.15 s of server time. Rendered plots are cached
-  (`bindCache`), so the next visitor asking for the same view gets it immediately.
+* **Reads only what is shown.** The old app re-read every site on the first visit of each
+  day and saved `data/all_data.RData` and `data/updated.txt`. The new app opens a site by
+  reading its time vectors and the few variables on screen, then keeps each variable in
+  memory until the site's files change (it checks the `clean_tv` files, at most once a
+  minute). Opening a site touches about 15 files instead of 400 to 600, which is what
+  made it slow on network drives (about 12 s per site on `W:`). It writes nothing to its
+  folder. The two old files and `scripts/load_save_data.R` were removed.
+* **No WebGL needed.** Plots are drawn as SVG, so they also work in browsers where WebGL
+  is off (the old plots stayed empty there). Long periods are simplified for display
+  (lowest and highest value of each time step, at most 3,000 points per series); zooming
+  in makes the server send every half-hour of the new range. Scatter clouds are thinned
+  to one point per small screen cell; fits and statistics always use all the data.
+* **Rendered plots are cached** (`bindCache`), so the next visitor asking for the same
+  view gets it immediately.
 * **No external downloads.** The Roboto font and the logos are served from `www/`.
 * **Optional, recommended:** keep the R process alive between visits so the in-memory
   cache survives. In `/etc/shiny-server/shiny-server.conf`, inside the relevant
@@ -90,17 +95,31 @@ intent:
 8. **One period selector** in the sidebar now applies to the time series, scatter,
    diurnal and energy balance tabs. The old app had two date sliders with the same id
    (only one worked) and the time series ignored it.
+9. **Cumulative fluxes** now read `Clean/ThirdStage` directly (the old tab only worked if
+   the whole app was switched to ThirdStage, which it never was). Complete years are
+   drawn as before; incomplete years (such as the current one) are added as dashed
+   lines. Days with a gap are left out of the running sum.
+10. **"Last record"** on the overview tiles is the last time step with FC or LE data
+   (or the first flux/met variable available), rather than any variable.
 
 The site data, potential radiation and 15-day composites were checked against the old
 functions on the same database copy: identical values.
 
 ## Configuration
 
-Everything is in `scripts/UQAM_ini.R`: `main_dir` (or the `CARBONIQUE_DB` environment
-variable), `level` (switch to ThirdStage there to enable cumulative fluxes),
-`default_site`, the radiation variable names and the variables of the All sites page.
+Everything is in `scripts/UQAM_ini.R`:
+
+* `main_dir` (or the `CARBONIQUE_DB` environment variable) and `level` (the data level
+  the site tabs read),
+* `cumulative_level` and `cumulative_pattern`: where the cumulative fluxes tab finds
+  gap-filled series (`Clean/ThirdStage`, names like `NEE_..._uStar_f`). It reads them for
+  any site that has that folder, whatever `level` is set to,
+* `default_site`, the radiation variable names, the variables of the All sites page,
+* `max_points_per_series` (display simplification), `recheck_seconds` (how often a site's
+  files are checked for updates).
 
 The radiation diagnostics need each site's coordinates in
 `data/site_coordinates_UQAM.xlsx` (columns Site, Standard_Meridian, Latitude,
-Longitude). UQAM_3, UQAM_4, UQAM_5 and MCGILL_1 are not in that file yet; the tab shows
-a message for them until rows are added.
+Longitude; one row per site, site names as in the database folders). All six sites
+(MCGILL_1, UQAM_1 to UQAM_5) are in it. A new site only needs a new row; until then its
+radiation tab shows a message.

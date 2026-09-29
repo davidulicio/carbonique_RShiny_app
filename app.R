@@ -22,7 +22,7 @@ library(data.table)
 source("scripts/UQAM_ini.R")
 for (f in list.files("functions", pattern = "\\.R$", full.names = TRUE)) source(f)
 
-asset_version <- "2026.09.1"   # bump when www/ files change, so browsers reload them
+asset_version <- "2026.09.2"   # bump when www/ files change, so browsers reload them
 
 cq_theme <- bs_theme(
   version = 5, preset = "bootstrap",   # plain Bootstrap 5 (no extra Open Sans download)
@@ -224,7 +224,7 @@ ui <- function(request) {
       ),
       nav_panel(
         i18n("tab_cum"), value = "cum",
-        if (any(grepl("ThirdStage", level))) controls(sel("cum_var", "lbl_flux", ch$cum_var, width = "260px")),
+        uiOutput("cum_controls"),
         plot_box("cum_plot", "460px"),
         caption("cap_cum")
       )
@@ -236,14 +236,17 @@ ui <- function(request) {
       width = 285, class = "cq-sidebar",
       selectInput("xcol_all", i18n("lbl_xall"), choices = all_vars, selected = "datetime"),
       selectInput("ycol_all", i18n("lbl_yall"), choices = all_vars[-1], selected = "TA"),
-      radioButtons("all_res", i18n("lbl_resolution"), inline = TRUE,
-                   choiceNames = list(i18n("res_30"), i18n("res_daily")),
-                   choiceValues = c("30min", "daily"), selected = "daily"),
+      radioButtons("all_res", i18n("lbl_resolution"),
+                   choiceNames = list(i18n("res_30"), i18n("res_daily"), i18n("res_monthly")),
+                   choiceValues = c("30min", "daily", "monthly"), selected = "daily"),
+      radioButtons("all_layout", i18n("lbl_layout"),
+                   choiceNames = list(i18n("layout_panels"), i18n("layout_overlay")),
+                   choiceValues = c("panels", "overlay"), selected = "panels"),
       checkboxGroupInput("all_sites", i18n("lbl_sites"), choices = sites, selected = sites)
     ),
     card(
       class = "cq-card",
-      card_body(plot_box("all_plot", "600px"), caption("cap_all"))
+      card_body(uiOutput("all_plot_ui"), caption("cap_all"))
     )
   )
 
@@ -290,7 +293,7 @@ server <- function(input, output, session) {
   # new site has them. Inputs that change are frozen until the browser confirms
   # the update, so no plot is drawn twice or with a stale selection.
   observeEvent(site_obj(), {
-    ids <- c("ts_var", "sc_x", "sc_y", "di_var", "rad_var", "rad_year", "ebc_x", "ebc_y", "cum_var")
+    ids <- c("ts_var", "sc_x", "sc_y", "di_var", "rad_var", "rad_year", "ebc_x", "ebc_y")
     cur <- lapply(stats::setNames(ids, ids), function(id) input[[id]])
     ch <- site_choices(site_obj(), cur)
     prev <- session$userData$choices
@@ -311,7 +314,7 @@ server <- function(input, output, session) {
     if (identical(input$period, "custom")) paste("custom", paste(input$dates, collapse = "_")) else input$period
   })
   period_rows <- reactive({
-    obj <- site_obj(); dt <- obj$data
+    obj <- site_obj()
     end <- obj$last; start <- obj$first
     r <- switch(input$period %||% "all",
                 "30d" = c(end - 30 * 86400, end),
@@ -322,16 +325,10 @@ server <- function(input, output, session) {
                   c(as.POSIXct(as.character(input$dates[1]), tz = "UTC"),
                     as.POSIXct(as.character(input$dates[2]), tz = "UTC") + 86400)
                 },
-                c(start, end))
-    which(dt$datetime >= r[1] & dt$datetime <= r[2])
+                NULL)
+    if (is.null(r)) seq_along(obj$datetime) else which(obj$datetime >= r[1] & obj$datetime <= r[2])
   })
-  period_data <- function(cols) {
-    obj <- site_obj(); rows <- period_rows()
-    d <- data.frame(datetime = obj$data$datetime[rows])
-    for (cl in unique(cols)) d[[cl]] <- obj$data[[cl]][rows]
-    d$year <- as.integer(format(d$datetime, "%Y"))
-    d
-  }
+  period_data <- function(cols) obj_cols(site_obj(), cols, period_rows())
 
   # Sidebar: data level and location
   output$site_meta <- renderUI({
@@ -346,14 +343,14 @@ server <- function(input, output, session) {
 
   # Overview tiles
   output$site_stats <- renderUI({
-    obj <- site_obj(); l <- lang(); dt <- obj$data
+    obj <- site_obj(); l <- lang()
     days <- floor(as.numeric(difftime(Sys.time(), obj$last, units = "days")))
     ago <- if (days <= 0) tr("stat_today", l) else if (days == 1) tr("stat_day_ago", l) else tr("stat_days_ago", l, n = days)
     stale <- days > 3
     flux <- intersect(c("FC", "NEE", "LE", "H"), obj$vars)[1]
     if (is.na(flux)) flux <- obj$vars[1]
-    win <- dt$datetime > obj$last - 30 * 86400 & dt$datetime <= obj$last
-    cov <- mean(!is.na(dt[[flux]][win]))
+    win <- obj$datetime > obj$last - 30 * 86400 & obj$datetime <= obj$last
+    cov <- mean(!is.na(obj_col(obj, flux)[win]))
     yrs <- range(obj$years)
     tile <- function(cls, label, value, sub, extra = NULL) {
       div(class = paste("cq-stat", cls),
@@ -391,6 +388,24 @@ server <- function(input, output, session) {
     renderPlotly(plot_timeseries(site_obj(), ts_cols(), period_rows(), input$ts_res, lang())),
     site_key(), ts_cols(), period_key(), input$ts_res, lang()
   )
+  # Zooming in or out asks for the half-hourly values of the new range
+  # (long ranges are simplified; see plot_timeseries.R)
+  observeEvent(input$ts_plot_xrange, {
+    if (!identical(input$ts_res, "30min")) return()
+    obj <- site_obj(); cols <- ts_cols(); rows <- period_rows()
+    z <- input$ts_plot_xrange
+    trs <- if (isTRUE(z$reset)) {
+      ab <- trim_to_data(lapply(cols, function(cl) obj_col(obj, cl)[rows]))
+      req(!is.null(ab))
+      timeseries_traces(obj, cols, rows[ab[1]:ab[2]])
+    } else {
+      rng <- c(parse_plotly_time(z$from), parse_plotly_time(z$to))
+      req(!anyNA(rng))
+      timeseries_traces(obj, cols, rows, rng[1], rng[2])
+    }
+    restyle_xy(session, "ts_plot", trs)
+  })
+
   output$ts_csv <- downloadHandler(
     filename = function() paste0(input$site, "_", input$ts_var, "_", format(Sys.Date(), "%Y%m%d"), ".csv"),
     content = function(file) {
@@ -503,21 +518,62 @@ server <- function(input, output, session) {
     site_key(), input$ebc_x, input$ebc_y, period_key(), lang()
   )
 
-  # f) Cumulative fluxes --------------------------------------------------
+  # f) Cumulative fluxes (gap-filled ThirdStage data, read on demand) ----------
+  output$cum_controls <- renderUI({
+    vars <- cumulative_vars(input$site)
+    if (!length(vars)) return(NULL)
+    cur <- isolate(input$cum_var)
+    controls(selectInput("cum_var", i18n("lbl_flux"), choices = vars,
+                         selected = if (!is.null(cur) && cur %in% vars) cur else vars[1], width = "300px"))
+  })
   output$cum_plot <- bindCache(
-    renderPlotly(plot_cumulative(site_obj(), input$cum_var, lang())),
-    site_key(), input$cum_var, lang()
+    renderPlotly(plot_cumulative(input$site, input$cum_var, lang())),
+    input$site, thirdstage_catalog(input$site)$signature %||% "none", input$cum_var, lang()
   )
 
   # g) All sites ------------------------------------------------------------
-  all_obj <- reactive(get_all_sites_data())
+  all_sites_now <- reactive(available_sites())
+  all_data <- reactive({
+    req(input$xcol_all, input$ycol_all)
+    all_sites_xy(input$xcol_all, input$ycol_all, intersect(all_sites_now(), input$all_sites))
+  })
+  all_units <- var_units(var_of_interest, UnitCSVFilePath)
+
+  # Height grows with the number of panels; only changes when the layout does
+  all_height <- reactiveVal(620)
+  observe({
+    req(identical(input$nav, "all"))
+    n <- length(input$all_sites)
+    h <- if (!identical(input$all_layout, "panels") || n <= 1) 600 else
+      if (identical(input$xcol_all, "datetime")) 70 + n * 165 else 90 + ceiling(n / (if (n <= 4) 2 else 3)) * 300
+    if (!identical(h, isolate(all_height()))) all_height(h)
+  })
+  output$all_plot_ui <- renderUI(plot_box("all_plot", paste0(all_height(), "px")))
+
   output$all_plot <- bindCache(
-    renderPlotly({
-      req(input$xcol_all, input$ycol_all)
-      plot_all_sites(all_obj(), input$xcol_all, input$ycol_all, input$all_sites, input$all_res, lang())
-    }),
-    all_obj()$signature, input$xcol_all, input$ycol_all, sort(input$all_sites), input$all_res, lang()
+    renderPlotly(plot_all_sites(all_data(), all_sites_now(), input$all_sites, input$xcol_all,
+                                input$ycol_all, all_units, input$all_res, input$all_layout, lang())),
+    all_sites_signature(), input$xcol_all, input$ycol_all, sort(input$all_sites),
+    input$all_res, input$all_layout, lang()
   )
+
+  observeEvent(input$all_plot_xrange, {
+    if (!identical(input$all_res, "30min") || !identical(input$xcol_all, "datetime")) return()
+    d <- all_data()
+    sites <- intersect(all_sites_now(), input$all_sites)
+    sites <- sites[sites %in% unique(d$site[!is.na(d$y)])]
+    z <- input$all_plot_xrange
+    panels <- identical(input$all_layout, "panels") && length(sites) > 1
+    mp <- if (panels) max_points_per_series else 1500
+    trs <- if (isTRUE(z$reset)) all_sites_time_traces(d, sites, "30min", max_points = mp) else {
+      rng <- c(parse_plotly_time(z$from), parse_plotly_time(z$to))
+      req(!anyNA(rng))
+      all_sites_time_traces(d, sites, "30min", rng[1], rng[2], max_points = mp)
+    }
+    # panels share one y range: fit it to what is now in view
+    yr <- range(unlist(lapply(trs, `[[`, "y")), finite = TRUE)
+    restyle_xy(session, "all_plot", trs, yrange = if (panels && all(is.finite(yr))) yr)
+  })
 }
 
 # 4. RUN APP -----

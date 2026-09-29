@@ -44,10 +44,12 @@ It reads every site, renders every plot in both languages and ends with
 ## How the data are read
 
 The app reads the binary database directly (`<year>/<site>/<level>/<variable>`, float32
-series plus the `clean_tv` time vector). Each site is read when it is first opened
-(well under a second) and kept in memory. When the cleaning pipeline updates the
-files, the change is detected and the site is read again on the next request, so no
-daily rebuild or saved `.RData` file is needed.
+series plus the `clean_tv` time vector). Opening a site reads its time vectors and only
+the variables on screen; each variable is then kept in memory until the site's files
+change. This keeps it quick on network drives, where every file opened costs time.
+
+Plots are SVG (no WebGL needed). Long periods are simplified for display and zooming in
+brings back every half-hour of the new range.
 
 ## Credits
 
