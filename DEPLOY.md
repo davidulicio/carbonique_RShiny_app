@@ -114,6 +114,13 @@ Everything is in `scripts/UQAM_ini.R`:
 * `cumulative_level` and `cumulative_pattern`: where the cumulative fluxes tab finds
   gap-filled series (`Clean/ThirdStage`, names like `NEE_..._uStar_f`). It reads them for
   any site that has that folder, whatever `level` is set to,
+* `logger_overrides`: series taken from a second logger instead of the site's own files.
+  At UQAM_4, radiation (CNR4, PQS), soil heat flux (`G_1` = mean of the four plates,
+  from 2026-04-08) and soil temperature `TS_1` to `TS_4` (SoilVue depths 1 to 4) come
+  from `Met/B` (UQAM_4b logger), because they are empty or wrong on the main logger.
+  These files are raw, so values outside plausible limits are dropped (set per variable
+  in the same place). Only variables the site already has are replaced; the smoke test
+  lists them per site,
 * `default_site`, the radiation variable names, the variables of the All sites page,
 * `max_points_per_series` (display simplification), `recheck_seconds` (how often a site's
   files are checked for updates).

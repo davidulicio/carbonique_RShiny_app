@@ -30,6 +30,10 @@ testServer(shinyAppDir("."), {
     cat(sprintf("%-10s %d time steps, %d variables, opened in %.2f s (last record %s)\n",
                 s, length(obj$datetime), length(obj$vars),
                 as.numeric(difftime(Sys.time(), t0, units = "secs")), format(obj$last)))
+    for (e in obj$cat$years) if (length(e$override$vars)) {
+      cat(sprintf("%-10s %s, from %s: %s\n", "", e$year, e$override$folder,
+                  paste(names(e$override$vars), collapse = ", ")))
+    }
     ch <- site_choices(obj)
     for (lang in c("en", "fr")) {
       t1 <- Sys.time()

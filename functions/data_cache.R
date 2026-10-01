@@ -79,19 +79,100 @@ tv_signature <- function(tv_paths) {
   paste(tv_paths, info$size, as.numeric(info$mtime), collapse = "|")
 }
 
-build_catalog <- function(site, levels = level, yrs = site_years(site)) {
+# Time vector of a folder: clean_tv, else TimeVector, else a file ending in _tv
+find_tv_file <- function(f) {
+  lf <- tolower(f)
+  for (cand in unique(tolower(c(tv_input, "clean_tv", "timevector")))) {
+    i <- match(cand, lf)
+    if (!is.na(i)) return(f[i])
+  }
+  i <- grep("_tv$", lf)
+  if (length(i)) f[i[1]] else NA_character_
+}
+
+read_tv <- function(p) {
+  .io(); readBin(p, "double", n = file.size(p) %/% 8)
+}
+
+# Half-hour index of Matlab datenums, for matching two time vectors
+tv_slot <- function(tv) round((tv - 719529) * 48)
+
+# Second-logger series that replace the site's own for one year (see
+# `logger_overrides` in scripts/UQAM_ini.R). Only variables the site has.
+year_overrides <- function(site, base, tv, files) {
+  spec <- if (exists("logger_overrides")) logger_overrides[[site]] else NULL
+  if (is.null(spec) || !length(spec$vars)) return(NULL)
+  p <- file.path(base, spec$folder)
+  .io(); if (!dir.exists(p)) return(NULL)
+  .io(); f <- list.files(p)
+  tvf <- find_tv_file(f)
+  if (is.na(tvf)) return(NULL)
+  path_of <- function(x) { h <- f[match(tolower(x), tolower(f))]; ifelse(is.na(h), NA, file.path(p, h)) }
+  vars <- list()
+  for (target in intersect(names(spec$vars), names(files))) {   # only variables the site has
+    s <- spec$vars[[target]]
+    src <- path_of(s[[1]])
+    if (anyNA(src)) next
+    when <- NULL
+    if (length(s$when)) {
+      wp <- path_of(names(s$when)[1])
+      if (is.na(wp)) next
+      when <- list(file = wp, above = as.numeric(s$when[[1]]))
+    }
+    vars[[target]] <- list(files = src, limits = s$limits, when = when,
+                           from = if (length(s$from)) as.numeric(as.Date(s$from)) + 719529)
+  }
+  if (!length(vars)) return(NULL)
+  btv <- read_tv(file.path(p, tvf))
+  idx <- match(tv_slot(btv), tv_slot(tv))
+  # never blank the site's own series because the time vectors do not line up
+  if (!any(!is.na(idx))) return(NULL)
+  list(folder = spec$folder, tv_path = file.path(p, tvf), tv = btv, n = length(btv),
+       idx = idx, vars = vars)
+}
+
+# One variable from the second logger, on the site's own time steps
+read_override <- function(e, var) {
+  ov <- e$override; s <- ov$vars[[var]]
+  clip <- function(v) {
+    v[!is.finite(v)] <- NA
+    if (length(s$limits) == 2) v[!is.na(v) & (v < s$limits[1] | v > s$limits[2])] <- NA
+    v
+  }
+  vals <- lapply(s$files, function(p) clip(read_float_file(p, ov$n)))
+  b <- if (length(vals) == 1) vals[[1]] else {
+    m <- rowMeans(do.call(cbind, vals), na.rm = TRUE); m[is.nan(m)] <- NA; m
+  }
+  if (!is.null(s$when)) {
+    w <- read_float_file(s$when$file, ov$n)
+    b[!(is.finite(w) & w > s$when$above)] <- NA
+  }
+  if (!is.null(s$from)) b[ov$tv <= s$from] <- NA   # time stamps mark the end of each half-hour
+  v <- rep(NA_real_, e$n)
+  ok <- !is.na(ov$idx)
+  v[ov$idx[ok]] <- b[ok]
+  v
+}
+
+catalog_tv_paths <- function(years) {
+  c(vapply(years, `[[`, "", "tv_path"),
+    unlist(lapply(years, function(e) e$override$tv_path)))
+}
+
+build_catalog <- function(site, levels = level, yrs = site_years(site), overrides = TRUE) {
   years <- lapply(yrs, function(y) {
     base <- file.path(main_dir, y, site)
     tv_path <- file.path(base, levels[1], tv_input)
     .io(); if (!file.exists(tv_path)) return(NULL)
-    .io(); tv <- readBin(tv_path, "double", n = file.size(tv_path) %/% 8)
+    tv <- read_tv(tv_path)
     files <- character(0)
     for (lv in levels) {
       p <- file.path(base, lv)
       f <- setdiff(list_level_files(p), names(files))   # first level wins on duplicates
       files[f] <- file.path(p, f)
     }
-    list(year = y, tv_path = tv_path, n = length(tv), tv = tv, files = files)
+    ov <- if (overrides) year_overrides(site, base, tv, files) else NULL
+    list(year = y, tv_path = tv_path, n = length(tv), tv = tv, files = files, override = ov)
   })
   years <- Filter(Negate(is.null), years)
   if (!length(years)) return(NULL)
@@ -105,7 +186,7 @@ build_catalog <- function(site, levels = level, yrs = site_years(site)) {
   raw <- unique(unlist(lapply(years, function(e) names(e$files))))
   list(site = site, years = years, datetime = datetime, order = ord,
        sorted = identical(ord, seq_along(ord)), raw_vars = raw,
-       signature = tv_signature(vapply(years, `[[`, "", "tv_path")),
+       signature = tv_signature(catalog_tv_paths(years)),
        checked = Sys.time(), values = new.env(parent = emptyenv()))
 }
 
@@ -114,7 +195,7 @@ site_catalog <- function(site) {
   cat <- .cq_cache[[key]]
   if (!is.null(cat) && difftime(Sys.time(), cat$checked, units = "secs") < recheck_seconds) return(cat)
   if (!is.null(cat)) {
-    sig <- tv_signature(vapply(cat$years, `[[`, "", "tv_path"))
+    sig <- tv_signature(catalog_tv_paths(cat$years))
     if (identical(sig, cat$signature)) {
       cat$checked <- Sys.time(); .cq_cache[[key]] <- cat
       return(cat)
@@ -127,14 +208,19 @@ site_catalog <- function(site) {
 }
 
 # 3. One variable, all years (cached) ----------------------------------------
+read_float_file <- function(p, n) {
+  .io()
+  v <- tryCatch(readBin(p, "double", n = n, size = 4), error = function(err) numeric(0))
+  if (length(v) < n) v <- c(v, rep(NA_real_, n - length(v)))
+  v
+}
+
 read_raw_var <- function(cat, var) {
   x <- unlist(lapply(cat$years, function(e) {
+    if (!is.null(e$override) && var %in% names(e$override$vars)) return(read_override(e, var))
     p <- e$files[var]
     if (is.na(p)) return(rep(NA_real_, e$n))
-    .io()
-    v <- tryCatch(readBin(p, "double", n = e$n, size = 4), error = function(err) numeric(0))
-    if (length(v) < e$n) v <- c(v, rep(NA_real_, e$n - length(v)))
-    v
+    read_float_file(p, e$n)
   }), use.names = FALSE)
   if (!cat$sorted) x <- x[cat$order]
   x
@@ -270,7 +356,7 @@ thirdstage_catalog <- function(site) {
   yrs <- site_years(site)
   .io(length(yrs))
   yrs <- yrs[dir.exists(file.path(main_dir, yrs, site, cumulative_level))]
-  cat <- if (length(yrs)) build_catalog(site, cumulative_level, yrs) else NULL
+  cat <- if (length(yrs)) build_catalog(site, cumulative_level, yrs, overrides = FALSE) else NULL
   if (is.null(cat)) {
     cat <- list(site = site, years = list(), raw_vars = character(0), checked = Sys.time())
   }

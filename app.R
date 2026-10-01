@@ -571,8 +571,9 @@ server <- function(input, output, session) {
       all_sites_time_traces(d, sites, "30min", rng[1], rng[2], max_points = mp)
     }
     # panels share one y range: fit it to what is now in view
-    yr <- range(unlist(lapply(trs, `[[`, "y")), finite = TRUE)
-    restyle_xy(session, "all_plot", trs, yrange = if (panels && all(is.finite(yr))) yr)
+    yv <- unlist(lapply(trs, `[[`, "y")); yv <- yv[is.finite(yv)]
+    yr <- if (length(yv)) range(yv) else NULL
+    restyle_xy(session, "all_plot", trs, yrange = if (panels) yr)
   })
 }
 
